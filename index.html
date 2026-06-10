@@ -155,24 +155,24 @@ $("btn-join").onclick = async () => {
 };
 
 // ---------- sensors ----------
-let tilt = 0;          // side lean (deg), from gamma
-let rawSwing = 0;      // absolute gravity angle (deg), wraps at ±180
-let swing = 0;         // continuous unwrapped angle, zeroed at grip
-let lastRaw = 0;
-let gripped = false;
-let velocity = 0;      // deg/s, smoothed
-let lastTime = 0;
-let velHistory = [];   // recent {t, v, tilt} samples for the release maths
+// Everything is derived from the gravity vector — one sensor, no Euler angles.
+// Works with the phone held screen-up in the palm OR screen facing the player:
+// an arm swing rotates the phone about its x axis in both grips, so we measure
+// per-frame gravity rotation about that axis and accumulate it.
 
-function wrap180(a) { return ((a + 540) % 360) - 180; }
+let gx = 0, gy = 0, gz = 9.8;  // low-passed gravity (device frame)
+let px = 0, py = 0, pz = 1;    // previous gravity direction (unit vector)
+
+let swing = 0;        // accumulated swing angle (deg), zeroed at grip
+let tilt = 0;         // wrist tilt (deg), relative to grip pose
+let tiltRaw = 0;      // absolute sideways gravity angle
+let tiltZero = 0;     // tiltRaw captured at grip
+let gripped = false;
+let velocity = 0;     // deg/s, smoothed
+let lastTime = 0;
+let velHistory = [];  // recent {t, v, tilt} samples for the release maths
 
 function startSensors() {
-  let gx = 0, gy = 0, gz = 9.8;
-
-  window.addEventListener("deviceorientation", (e) => {
-    tilt = e.gamma ?? 0;
-  });
-
   window.addEventListener("devicemotion", (e) => {
     const g = e.accelerationIncludingGravity;
     if (!g) return;
@@ -180,14 +180,24 @@ function startSensors() {
     gx += k * ((g.x ?? 0) - gx);
     gy += k * ((g.y ?? 0) - gy);
     gz += k * ((g.z ?? 0) - gz);
-    rawSwing = Math.atan2(gz, -gy) * 180 / Math.PI;
 
-    // unwrap: accumulate shortest-path deltas, so ±180 crossings are seamless
-    const delta = wrap180(rawSwing - lastRaw);
-    lastRaw = rawSwing;
+    // normalise to a direction
+    const len = Math.hypot(gx, gy, gz) || 1;
+    const nx = gx / len, ny = gy / len, nz = gz / len;
+
+    // sideways tilt: how far gravity leans along the phone's x axis
+    tiltRaw = Math.asin(Math.max(-1, Math.min(1, nx))) * 180 / Math.PI;
+    tilt = tiltRaw - tiltZero;
 
     if (gripped) {
+      // signed rotation about the phone's x axis since the last frame —
+      // sideways tilt rotates gravity about a different axis, so it
+      // simply doesn't register here
+      const crossX = py * nz - pz * ny;        // (prev × now).x
+      const dot = px * nx + py * ny + pz * nz;
+      const delta = Math.atan2(crossX, dot) * 180 / Math.PI;
       swing += delta;
+
       const now = performance.now();
       const dt = (now - lastTime) / 1000;
       lastTime = now;
@@ -197,6 +207,7 @@ function startSensors() {
         while (velHistory.length && now - velHistory[0].t > 200) velHistory.shift();
       }
     }
+    px = nx; py = ny; pz = nz;
   });
 
   // stream while gripped, ~25Hz
@@ -216,10 +227,10 @@ grip.addEventListener("touchstart", (e) => {
   e.preventDefault();
   if (!myTurn || gripped) return;
   gripped = true;
-  swing = 0;            // this grip pose is the arm's start position
+  swing = 0;             // this grip pose is the arm's start position
+  tiltZero = tiltRaw;    // ...and its neutral wrist angle
   velocity = 0;
   velHistory = [];
-  lastRaw = rawSwing;   // start unwrapping from here
   lastTime = performance.now();
   grip.classList.add("held");
   grip.textContent = "SWING!";
