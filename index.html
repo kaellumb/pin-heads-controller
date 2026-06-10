@@ -121,6 +121,10 @@ $("btn-join").onclick = async () => {
   localStorage.setItem("player_name", savedName);
   if (!savedCode) return;
 
+  document.activeElement?.blur();
+  $("name").disabled = true;
+  $("code").disabled = true;
+
   if (typeof DeviceMotionEvent?.requestPermission === "function") {
     try { await DeviceMotionEvent.requestPermission(); } catch {}
   }
