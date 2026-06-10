@@ -126,37 +126,30 @@ const SWING_START = 12;   // m/s² — begin tracking a swing
 const SWING_END   = 4;    // m/s² — sharp drop = release
 
 function startSensors() {
+  let gx = 0, gy = 0, gz = 9.8;
+  let swing = 0;
+
   window.addEventListener("deviceorientation", (e) => {
-    tilt = e.gamma ?? 0;    // side lean, portrait grip
-    pitch = e.beta ?? 0;    // forward/back for swing scrubbing
+    tilt = e.gamma ?? 0;          // keep: side lean
   });
 
   window.addEventListener("devicemotion", (e) => {
-    if (!myTurn) return;
-    const a = e.acceleration;
-    if (!a) return;
-    const mag = Math.hypot(a.x ?? 0, a.y ?? 0, a.z ?? 0);
-
-    if (!swinging && mag > SWING_START) {
-      swinging = true; peakAccel = mag; peakTilt = tilt;
-    } else if (swinging) {
-      if (mag > peakAccel) { peakAccel = mag; peakTilt = tilt; }
-      if (mag < SWING_END) {
-        swinging = false;
-        send({ type: "throw",
-               power: Math.min(peakAccel / 35, 1),   // normalised 0–1
-               spin:  Math.max(-1, Math.min(1, peakTilt / 45)) });
-        navigator.vibrate?.([60, 40, 60]);
-      }
+    const g = e.accelerationIncludingGravity;
+    if (g) {
+      const k = 0.15;
+      gx += k * ((g.x ?? 0) - gx);
+      gy += k * ((g.y ?? 0) - gy);
+      gz += k * ((g.z ?? 0) - gz);
+      swing = Math.atan2(gz, -gy) * 180 / Math.PI;
     }
-  });
+});
 
   // stream orientation ~25Hz while it's our turn
   setInterval(() => {
     if (joined && myTurn && !swinging) {
       send({ type: "motion",
-             tilt:  Math.round(tilt * 10) / 10,
-             pitch: Math.round(pitch * 10) / 10 });
+        tilt:  Math.round(tilt * 10) / 10,
+        swing: Math.round(swing * 10) / 10 });
     }
   }, 40);
 }
