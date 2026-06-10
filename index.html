@@ -60,13 +60,16 @@
 
 <div class="screen" id="screen-turn">
   <div class="big">YOUR TURN</div>
-  <p class="hint">Hold the orange zone with your thumb,<br>swing your arm, let go to throw!</p>
+  <p class="hint">Hold the orange zone with your thumb,<br>swing your arm, let go to throw!<br>Flick your wrist for spin.</p>
   <div id="grip">HOLD TO GRIP</div>
 </div>
 
 <script>
 const RELAY_URL = "wss://pin-heads-relay.onrender.com";
 // LAN testing from a desktop browser: "ws://localhost:8080"
+
+// ---------- tuning ----------
+const FULL_TWIST = 300;   // deg/s wrist flick that counts as maximum spin
 
 // ---------- persistent identity ----------
 let token = localStorage.getItem("player_token");
@@ -156,9 +159,10 @@ $("btn-join").onclick = async () => {
 
 // ---------- sensors ----------
 // Division of labour:
-//   GYRO    (rotationRate.beta)        -> throw speed: instant, unfiltered
-//   GRAVITY (accelerationIncludingGravity) -> swing angle + wrist tilt: drift-free
-// Both swing and tilt are measured relative to the grip pose, and the maths is
+//   GYRO    rotationRate.beta  -> throw speed (instant, unfiltered)
+//   GYRO    rotationRate.gamma -> wrist twist  -> spin (immune to motion noise)
+//   GRAVITY                    -> swing angle + lean (drift-free, slow phases)
+// Swing and lean are measured relative to the grip pose, and the maths is
 // grip-agnostic: screen-up in the palm or screen facing the player both work,
 // because an arm swing rotates the phone about its x axis in either grip.
 
@@ -166,13 +170,14 @@ let gx = 0, gy = 0, gz = 9.8;  // low-passed gravity (device frame)
 let px = 0, py = 0, pz = 1;    // previous gravity direction (unit vector)
 
 let swing = 0;        // accumulated swing angle (deg), zeroed at grip
-let tilt = 0;         // wrist tilt (deg), relative to grip pose
+let tilt = 0;         // lean (deg), relative to grip pose — for slow aiming only
 let tiltRaw = 0;      // absolute sideways gravity angle
 let tiltZero = 0;     // tiltRaw captured at grip
 let gripped = false;
-let velocity = 0;     // deg/s — gyro when available, derived fallback otherwise
+let velocity = 0;     // deg/s about the swing axis (gyro)
+let twist = 0;        // deg/s about the long axis = wrist flick (gyro)
 let lastTime = 0;
-let velHistory = [];  // recent {t, v, tilt} samples for the release maths
+let velHistory = [];  // recent {t, v, w} samples for the release maths
 
 function startSensors() {
   window.addEventListener("devicemotion", (e) => {
@@ -187,14 +192,12 @@ function startSensors() {
     const len = Math.hypot(gx, gy, gz) || 1;
     const nx = gx / len, ny = gy / len, nz = gz / len;
 
-    // sideways tilt: how far gravity leans along the phone's x axis
+    // lean: how far gravity tips along the phone's x axis (slow-phase use only)
     tiltRaw = Math.asin(Math.max(-1, Math.min(1, nx))) * 180 / Math.PI;
     tilt = tiltRaw - tiltZero;
 
     if (gripped) {
-      // ANGLE: signed gravity rotation about the x axis since last frame.
-      // Sideways tilt rotates gravity about a different axis, so it
-      // doesn't register here.
+      // ANGLE: signed gravity rotation about the x axis since last frame
       const crossX = py * nz - pz * ny;        // (prev × now).x
       const dot = px * nx + py * ny + pz * nz;
       const delta = Math.atan2(crossX, dot) * 180 / Math.PI;
@@ -204,16 +207,19 @@ function startSensors() {
       const dt = (now - lastTime) / 1000;
       lastTime = now;
 
-      // SPEED: gyro reads angular velocity directly — no lag, no filtering
+      // SPEED + TWIST: straight off the gyro — linear acceleration can't
+      // corrupt these, so they stay honest even mid fast swing
       const gyro = e.rotationRate;
       if (gyro && gyro.beta != null) {
-        velocity = gyro.beta;                  // deg/s about the swing axis
+        velocity = gyro.beta;                  // swing axis
+        twist = gyro.gamma ?? 0;               // wrist-flick axis
       } else if (dt > 0) {
         // rare gyro-less device: fall back to differentiated gravity angle
         velocity = velocity * 0.7 + (delta / dt) * 0.3;
+        twist = 0;
       }
 
-      velHistory.push({ t: now, v: velocity, tilt });
+      velHistory.push({ t: now, v: velocity, w: twist });
       while (velHistory.length && now - velHistory[0].t > 200) velHistory.shift();
     }
     px = nx; py = ny; pz = nz;
@@ -237,8 +243,9 @@ grip.addEventListener("touchstart", (e) => {
   if (!myTurn || gripped) return;
   gripped = true;
   swing = 0;             // this grip pose is the arm's start position
-  tiltZero = tiltRaw;    // ...and its neutral wrist angle
+  tiltZero = tiltRaw;    // ...and its neutral lean
   velocity = 0;
+  twist = 0;
   velHistory = [];
   lastTime = performance.now();
   grip.classList.add("held");
@@ -254,18 +261,17 @@ grip.addEventListener("touchend", (e) => {
   gripped = false;
   resetGripUI();
 
-  // peak speed and average tilt over the final 200ms
-  let peak = 0, tiltSum = 0;
+  // peak swing speed and peak wrist flick over the final 200ms
+  let peak = 0, peakTwist = 0;
   for (const s of velHistory) {
     if (Math.abs(s.v) > Math.abs(peak)) peak = s.v;
-    tiltSum += s.tilt;
+    if (Math.abs(s.w) > Math.abs(peakTwist)) peakTwist = s.w;
   }
-  const avgTilt = velHistory.length ? tiltSum / velHistory.length : 0;
 
   send({ type: "throw",
-         speed: Math.round(peak),                         // deg/s, signed (- = backwards!)
-         spin:  Math.max(-1, Math.min(1, avgTilt / 30)),  // -1 … +1
-         angle: Math.round(swing * 10) / 10 });           // arm angle at release
+         speed: Math.round(Math.abs(peak)),                     // deg/s
+         spin:  Math.max(-1, Math.min(1, peakTwist / FULL_TWIST)), // -1 … +1
+         angle: Math.round(swing * 10) / 10 });                 // arm angle at release
   velHistory = [];
   navigator.vibrate?.([60, 40, 60]);
 }, { passive: false });
