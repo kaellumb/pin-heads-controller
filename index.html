@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Pin Pals — Controller</title>
+<style>
+  :root { --bg:#14101f; --card:#221a35; --accent:#ffb347; --text:#f5f0ff; }
+  * { box-sizing:border-box; margin:0; -webkit-tap-highlight-color:transparent; }
+  body { background:var(--bg); color:var(--text); font-family:system-ui,sans-serif;
+         min-height:100dvh; display:flex; align-items:center; justify-content:center; }
+  .screen { display:none; width:100%; max-width:420px; padding:24px; text-align:center; }
+  .screen.active { display:block; }
+  h1 { font-size:1.6rem; margin-bottom:20px; letter-spacing:.04em; }
+  input { width:100%; padding:14px; margin-bottom:12px; font-size:1.2rem; border-radius:12px;
+          border:2px solid #443566; background:var(--card); color:var(--text); text-align:center; }
+  input#code { text-transform:uppercase; letter-spacing:.4em; font-weight:700; }
+  button { width:100%; padding:16px; font-size:1.2rem; font-weight:700; border:none;
+           border-radius:12px; background:var(--accent); color:#14101f; }
+  button:active { transform:scale(.97); }
+  .big { font-size:2rem; padding:40px 16px; border-radius:20px; background:var(--card); margin-bottom:16px; }
+  .hint { opacity:.65; margin-top:14px; font-size:.95rem; }
+  #status { position:fixed; top:10px; left:0; right:0; font-size:.8rem; opacity:.5; }
+</style>
+</head>
+<body>
+<div id="status">connecting…</div>
+
+<div class="screen active" id="screen-join">
+  <h1>JOIN THE GAME</h1>
+  <input id="name" placeholder="Your name" maxlength="12" autocomplete="off">
+  <input id="code" placeholder="ROOM CODE" maxlength="4" autocomplete="off">
+  <button id="btn-join">Join</button>
+  <p class="hint">Room code is on the TV</p>
+</div>
+
+<div class="screen" id="screen-wait">
+  <div class="big">You're in! 🎳</div>
+  <p class="hint">Waiting for your turn…</p>
+</div>
+
+<div class="screen" id="screen-turn">
+  <div class="big" id="turn-msg">YOUR TURN<br>Swing to bowl!</div>
+  <p class="hint">Hold your phone like a bowling ball.<br>Tilt sideways to lean.</p>
+</div>
+
+<script>
+const RELAY_URL = "wss://pin-heads-relay.onrender.com";        // <-- point at your relay
+// For LAN testing from a desktop browser: "ws://localhost:8080"
+
+// ---------- persistent identity ----------
+let token = localStorage.getItem("player_token");
+if (!token) {
+  token = crypto.randomUUID();
+  localStorage.setItem("player_token", token);
+}
+
+// ---------- ui helpers ----------
+const $ = (id) => document.getElementById(id);
+function show(name) {
+  document.querySelectorAll(".screen").forEach(s => s.classList.remove("active"));
+  $("screen-" + name).classList.add("active");
+}
+
+// ---------- websocket with auto-reconnect ----------
+let ws = null, joined = false, myTurn = false;
+let savedName = localStorage.getItem("player_name") || "";
+let savedCode = "";
+$("name").value = savedName;
+
+function connect() {
+  ws = new WebSocket(RELAY_URL);
+  ws.onopen = () => {
+    $("status").textContent = "connected";
+    if (savedCode) joinRoom();              // auto-rejoin after a drop
+  };
+  ws.onclose = () => {
+    $("status").textContent = "reconnecting…";
+    joined = false; myTurn = false;
+    setTimeout(connect, 1500);
+  };
+  ws.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+    if (msg.type === "joined") {
+      joined = true;
+      send({ type: "hello", token, name: savedName }); // identify ourselves to the game
+      show("wait");
+    }
+    if (msg.type === "error") { $("status").textContent = "room not found"; }
+    if (msg.type === "data") handleGameMessage(msg.data);
+  };
+}
+connect();
+
+function send(obj) {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+}
+function joinRoom() { send({ type: "join_room", code: savedCode }); }
+
+function handleGameMessage(d) {
+  if (d.msg === "your_turn") { myTurn = true; show("turn"); navigator.vibrate?.(200); }
+  if (d.msg === "turn_over") { myTurn = false; show("wait"); }
+}
+
+// ---------- join button: also the iOS sensor-permission gesture ----------
+$("btn-join").onclick = async () => {
+  savedName = $("name").value.trim() || "Player";
+  savedCode = $("code").value.trim().toUpperCase();
+  localStorage.setItem("player_name", savedName);
+  if (!savedCode) return;
+
+  // iOS requires this inside a user gesture
+  if (typeof DeviceMotionEvent?.requestPermission === "function") {
+    try { await DeviceMotionEvent.requestPermission(); } catch {}
+  }
+  try { await navigator.wakeLock?.request("screen"); } catch {}
+
+  startSensors();
+  joinRoom();
+};
+
+// ---------- sensors ----------
+let tilt = 0, pitch = 0;
+let swinging = false, peakAccel = 0, peakTilt = 0;
+const SWING_START = 12;   // m/s² — begin tracking a swing
+const SWING_END   = 4;    // m/s² — sharp drop = release
+
+function startSensors() {
+  window.addEventListener("deviceorientation", (e) => {
+    tilt = e.gamma ?? 0;    // side lean, portrait grip
+    pitch = e.beta ?? 0;    // forward/back for swing scrubbing
+  });
+
+  window.addEventListener("devicemotion", (e) => {
+    if (!myTurn) return;
+    const a = e.acceleration;
+    if (!a) return;
+    const mag = Math.hypot(a.x ?? 0, a.y ?? 0, a.z ?? 0);
+
+    if (!swinging && mag > SWING_START) {
+      swinging = true; peakAccel = mag; peakTilt = tilt;
+    } else if (swinging) {
+      if (mag > peakAccel) { peakAccel = mag; peakTilt = tilt; }
+      if (mag < SWING_END) {
+        swinging = false;
+        send({ type: "throw",
+               power: Math.min(peakAccel / 35, 1),   // normalised 0–1
+               spin:  Math.max(-1, Math.min(1, peakTilt / 45)) });
+        navigator.vibrate?.([60, 40, 60]);
+      }
+    }
+  });
+
+  // stream orientation ~25Hz while it's our turn
+  setInterval(() => {
+    if (joined && myTurn && !swinging) {
+      send({ type: "motion",
+             tilt:  Math.round(tilt * 10) / 10,
+             pitch: Math.round(pitch * 10) / 10 });
+    }
+  }, 40);
+}
+</script>
+</body>
+</html>
