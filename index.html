@@ -23,15 +23,23 @@
   .hint { opacity:.65; margin-top:14px; font-size:.95rem; }
   #status { position:fixed; top:10px; left:0; right:0; font-size:.8rem; opacity:.5; text-align:center; }
 
-  /* the grip zone: bottom two-thirds of the screen, thumb finds it blind */
   #grip {
     position:fixed; left:0; right:0; bottom:0; height:62dvh;
     background:var(--card); border-top:4px solid var(--accent);
     border-radius:28px 28px 0 0; touch-action:none; user-select:none;
-    display:flex; align-items:center; justify-content:center;
+    -webkit-user-select:none; display:flex; align-items:center; justify-content:center;
     font-size:1.5rem; font-weight:800; letter-spacing:.05em;
   }
   #grip.held { background:var(--accent); color:#14101f; }
+
+  /* iOS can't lock orientation — nag instead */
+  @media (orientation: landscape) {
+    body::after {
+      content:"↻ Turn your phone upright!";
+      position:fixed; inset:0; background:var(--bg); z-index:99;
+      display:flex; align-items:center; justify-content:center; font-size:1.6rem;
+    }
+  }
 </style>
 </head>
 <body>
@@ -88,7 +96,7 @@ function connect() {
   };
   ws.onclose = () => {
     $("status").textContent = "reconnecting…";
-    joined = false; myTurn = false;
+    joined = false; myTurn = false; gripped = false;
     setTimeout(connect, 1500);
   };
   ws.onmessage = (e) => {
@@ -98,7 +106,11 @@ function connect() {
       send({ type: "hello", token, name: savedName });
       show("wait");
     }
-    if (msg.type === "error") { $("status").textContent = "room not found"; }
+    if (msg.type === "error") {
+      $("status").textContent = "room not found";
+      $("name").disabled = false;
+      $("code").disabled = false;
+    }
     if (msg.type === "data") handleGameMessage(msg.data);
   };
 }
@@ -114,34 +126,43 @@ function handleGameMessage(d) {
   if (d.msg === "turn_over") { myTurn = false; gripped = false; show("wait"); }
 }
 
-// ---------- join button: doubles as the iOS sensor-permission gesture ----------
+// ---------- join: sensor permission + undo-popup fix + fullscreen ----------
 $("btn-join").onclick = async () => {
   savedName = $("name").value.trim() || "Player";
   savedCode = $("code").value.trim().toUpperCase();
   localStorage.setItem("player_name", savedName);
   if (!savedCode) return;
 
+  // no active/editable inputs = no iOS shake-to-undo popup mid-swing
   document.activeElement?.blur();
   $("name").disabled = true;
   $("code").disabled = true;
 
+  // iOS sensor permission must be requested inside a user gesture
   if (typeof DeviceMotionEvent?.requestPermission === "function") {
     try { await DeviceMotionEvent.requestPermission(); } catch {}
   }
   try { await navigator.wakeLock?.request("screen"); } catch {}
+
+  // Android: fullscreen + portrait lock (no-ops on iOS)
+  try {
+    await document.documentElement.requestFullscreen();
+    await screen.orientation.lock("portrait");
+  } catch {}
 
   startSensors();
   joinRoom();
 };
 
 // ---------- sensors ----------
-let tilt = 0;            // side lean (deg), from gamma
-let rawSwing = 0;        // absolute gravity angle (deg), wraps at ±180
-let swing = 0;           // continuous unwrapped angle, ZEROED AT GRIP
+let tilt = 0;          // side lean (deg), from gamma
+let rawSwing = 0;      // absolute gravity angle (deg), wraps at ±180
+let swing = 0;         // continuous unwrapped angle, zeroed at grip
 let lastRaw = 0;
 let gripped = false;
-let velocity = 0;        // deg/s, smoothed
+let velocity = 0;      // deg/s, smoothed
 let lastTime = 0;
+let velHistory = [];   // recent {t, v, tilt} samples for the release maths
 
 function wrap180(a) { return ((a + 540) % 360) - 180; }
 
@@ -161,15 +182,20 @@ function startSensors() {
     gz += k * ((g.z ?? 0) - gz);
     rawSwing = Math.atan2(gz, -gy) * 180 / Math.PI;
 
-    // unwrap: accumulate the shortest-path delta, so crossing ±180 is seamless
+    // unwrap: accumulate shortest-path deltas, so ±180 crossings are seamless
     const delta = wrap180(rawSwing - lastRaw);
     lastRaw = rawSwing;
+
     if (gripped) {
       swing += delta;
       const now = performance.now();
       const dt = (now - lastTime) / 1000;
       lastTime = now;
-      if (dt > 0) velocity = velocity * 0.7 + (delta / dt) * 0.3;
+      if (dt > 0) {
+        velocity = velocity * 0.7 + (delta / dt) * 0.3;
+        velHistory.push({ t: now, v: velocity, tilt });
+        while (velHistory.length && now - velHistory[0].t > 200) velHistory.shift();
+      }
     }
   });
 
@@ -188,11 +214,12 @@ const grip = $("grip");
 
 grip.addEventListener("touchstart", (e) => {
   e.preventDefault();
-  if (!myTurn) return;
+  if (!myTurn || gripped) return;
   gripped = true;
-  swing = 0;           // THIS grip pose is now the arm's start position
+  swing = 0;            // this grip pose is the arm's start position
   velocity = 0;
-  lastRaw = rawSwing;  // start unwrapping from here
+  velHistory = [];
+  lastRaw = rawSwing;   // start unwrapping from here
   lastTime = performance.now();
   grip.classList.add("held");
   grip.textContent = "SWING!";
@@ -200,20 +227,43 @@ grip.addEventListener("touchstart", (e) => {
   send({ type: "grip" });
 }, { passive: false });
 
-function release(e) {
+// deliberate release = throw
+grip.addEventListener("touchend", (e) => {
   e.preventDefault();
   if (!gripped) return;
   gripped = false;
+  resetGripUI();
+
+  // peak speed and average tilt over the final 200ms
+  let peak = 0, tiltSum = 0;
+  for (const s of velHistory) {
+    if (Math.abs(s.v) > Math.abs(peak)) peak = s.v;
+    tiltSum += s.tilt;
+  }
+  const avgTilt = velHistory.length ? tiltSum / velHistory.length : 0;
+
+  send({ type: "throw",
+         speed: Math.round(peak),                         // deg/s, signed (- = backwards!)
+         spin:  Math.max(-1, Math.min(1, avgTilt / 30)),  // -1 … +1
+         angle: Math.round(swing * 10) / 10 });           // arm angle at release
+  velHistory = [];
+  navigator.vibrate?.([60, 40, 60]);
+}, { passive: false });
+
+// interrupted touch (slip / system gesture) = drop the ball, no throw
+grip.addEventListener("touchcancel", (e) => {
+  e.preventDefault();
+  if (!gripped) return;
+  gripped = false;
+  resetGripUI();
+  velHistory = [];
+  send({ type: "grip_cancel" });
+}, { passive: false });
+
+function resetGripUI() {
   grip.classList.remove("held");
   grip.textContent = "HOLD TO GRIP";
-  send({ type: "throw",
-         power: Math.min(Math.abs(velocity) / 600, 1),  // 600 deg/s = full power, tune!
-         angle: Math.round(swing * 10) / 10,            // arm angle at release
-         spin:  Math.max(-1, Math.min(1, tilt / 45)) });
-  navigator.vibrate?.([60, 40, 60]);
 }
-grip.addEventListener("touchend", release, { passive: false });
-grip.addEventListener("touchcancel", release, { passive: false });
 </script>
 </body>
 </html>
