@@ -69,7 +69,8 @@ const RELAY_URL = "wss://pin-heads-relay.onrender.com";
 // LAN testing from a desktop browser: "ws://localhost:8080"
 
 // ---------- tuning ----------
-const FULL_TWIST = 300;   // deg/s wrist flick that counts as maximum spin
+const FULL_TWIST = 250;   // deg/s of *residual* wrist flick = maximum spin
+const SPIN_DEADZONE = 0.15; // below this, the throw counts as dead straight
 
 // ---------- persistent identity ----------
 let token = localStorage.getItem("player_token");
@@ -160,11 +161,15 @@ $("btn-join").onclick = async () => {
 // ---------- sensors ----------
 // Division of labour:
 //   GYRO    rotationRate.beta  -> throw speed (instant, unfiltered)
-//   GYRO    rotationRate.gamma -> wrist twist  -> spin (immune to motion noise)
+//   GYRO    rotationRate.gamma -> wrist twist -> spin, AFTER removing the
+//           part of gamma that's just the swing leaking in (see below)
 //   GRAVITY                    -> swing angle + lean (drift-free, slow phases)
-// Swing and lean are measured relative to the grip pose, and the maths is
-// grip-agnostic: screen-up in the palm or screen facing the player both work,
-// because an arm swing rotates the phone about its x axis in either grip.
+//
+// Spin bleed cancellation: gamma only equals pure wrist twist if the phone is
+// perfectly aligned with the swing plane — real grips never are, so the swing
+// leaks into gamma proportionally to swing speed. Each throw we fit that
+// proportion (slope of twist vs speed over the whole grip) and measure the
+// flick as the residual. Auto-calibrates per player, per throw.
 
 let gx = 0, gy = 0, gz = 9.8;  // low-passed gravity (device frame)
 let px = 0, py = 0, pz = 1;    // previous gravity direction (unit vector)
@@ -175,7 +180,9 @@ let tiltRaw = 0;      // absolute sideways gravity angle
 let tiltZero = 0;     // tiltRaw captured at grip
 let gripped = false;
 let velocity = 0;     // deg/s about the swing axis (gyro)
-let twist = 0;        // deg/s about the long axis = wrist flick (gyro)
+let twist = 0;        // deg/s about the long axis (gyro, contaminated by swing)
+let sumVV = 0;        // bleed-fit accumulators (reset each grip)
+let sumVW = 0;
 let lastTime = 0;
 let velHistory = [];  // recent {t, v, w} samples for the release maths
 
@@ -207,17 +214,20 @@ function startSensors() {
       const dt = (now - lastTime) / 1000;
       lastTime = now;
 
-      // SPEED + TWIST: straight off the gyro — linear acceleration can't
-      // corrupt these, so they stay honest even mid fast swing
+      // SPEED + TWIST: straight off the gyro
       const gyro = e.rotationRate;
       if (gyro && gyro.beta != null) {
         velocity = gyro.beta;                  // swing axis
-        twist = gyro.gamma ?? 0;               // wrist-flick axis
+        twist = gyro.gamma ?? 0;               // long axis (swing-contaminated)
       } else if (dt > 0) {
         // rare gyro-less device: fall back to differentiated gravity angle
         velocity = velocity * 0.7 + (delta / dt) * 0.3;
         twist = 0;
       }
+
+      // accumulate the bleed fit over the whole grip
+      sumVV += velocity * velocity;
+      sumVW += velocity * twist;
 
       velHistory.push({ t: now, v: velocity, w: twist });
       while (velHistory.length && now - velHistory[0].t > 200) velHistory.shift();
@@ -246,6 +256,8 @@ grip.addEventListener("touchstart", (e) => {
   tiltZero = tiltRaw;    // ...and its neutral lean
   velocity = 0;
   twist = 0;
+  sumVV = 0;
+  sumVW = 0;
   velHistory = [];
   lastTime = performance.now();
   grip.classList.add("held");
@@ -261,17 +273,24 @@ grip.addEventListener("touchend", (e) => {
   gripped = false;
   resetGripUI();
 
-  // peak swing speed and peak wrist flick over the final 200ms
-  let peak = 0, peakTwist = 0;
+  // how much of gamma was just the swing leaking in, for THIS grip
+  const slope = sumVV > 1 ? sumVW / sumVV : 0;
+
+  // peak swing speed and peak residual flick over the final 200ms
+  let peak = 0, peakFlick = 0;
   for (const s of velHistory) {
     if (Math.abs(s.v) > Math.abs(peak)) peak = s.v;
-    if (Math.abs(s.w) > Math.abs(peakTwist)) peakTwist = s.w;
+    const flick = s.w - slope * s.v;          // twist with the swing removed
+    if (Math.abs(flick) > Math.abs(peakFlick)) peakFlick = flick;
   }
 
+  let spin = Math.max(-1, Math.min(1, peakFlick / FULL_TWIST));
+  if (Math.abs(spin) < SPIN_DEADZONE) spin = 0;   // straight means straight
+
   send({ type: "throw",
-         speed: Math.round(Math.abs(peak)),                     // deg/s
-         spin:  Math.max(-1, Math.min(1, peakTwist / FULL_TWIST)), // -1 … +1
-         angle: Math.round(swing * 10) / 10 });                 // arm angle at release
+         speed: Math.round(Math.abs(peak)),       // deg/s
+         spin:  spin,                             // -1 … +1, 0 if no real flick
+         angle: Math.round(swing * 10) / 10 });   // arm angle at release
   velHistory = [];
   navigator.vibrate?.([60, 40, 60]);
 }, { passive: false });
