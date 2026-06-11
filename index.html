@@ -285,8 +285,8 @@ grip.addEventListener("touchend", (e) => {
   }
 
   // spin: the phone's roll at this exact moment. -1 full left, +1 full right
-  let spin = Math.max(-1, Math.min(1, rollAngle / FULL_SPIN_TILT));
-  if (Math.abs(spin) < SPIN_DEADZONE) spin = 0;
+  let spin = Math.max(-1, Math.min(1, tilt / 80));
+  if (Math.abs(spin) < 0.1) spin = 0;
 
   send({ type: "throw",
          speed: Math.round(Math.abs(peak)),       // deg/s
