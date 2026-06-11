@@ -28,7 +28,7 @@
     background:var(--card); border-top:4px solid var(--accent);
     border-radius:28px 28px 0 0; touch-action:none; user-select:none;
     -webkit-user-select:none; display:flex; align-items:center; justify-content:center;
-    font-size:1.5rem; font-weight:800; letter-spacing:.05em;
+    font-size:1.5rem; font-weight:800; letter-spacing:.05em; text-align:center;
   }
   #grip.held { background:var(--accent); color:#14101f; }
 
@@ -60,7 +60,8 @@
 
 <div class="screen" id="screen-turn">
   <div class="big">YOUR TURN</div>
-  <p class="hint">Hold the orange zone with your thumb,<br>swing your arm, let go to throw!<br>Flick your wrist for spin.</p>
+  <p class="hint">Lay the phone flat in your palm like a ball.<br>
+     Tilt it sideways for spin. Swing and let go to throw!</p>
   <div id="grip">HOLD TO GRIP</div>
 </div>
 
@@ -69,8 +70,8 @@ const RELAY_URL = "wss://pin-heads-relay.onrender.com";
 // LAN testing from a desktop browser: "ws://localhost:8080"
 
 // ---------- tuning ----------
-const FULL_TWIST = 250;   // deg/s of *residual* wrist flick = maximum spin
-const SPIN_DEADZONE = 0.5; // below this, the throw counts as dead straight
+const FULL_SPIN_TILT = 35;    // degrees of roll at grip = maximum hook
+const SPIN_DEADZONE  = 0.15;  // below this, the throw counts as dead straight
 
 // ---------- persistent identity ----------
 let token = localStorage.getItem("player_token");
@@ -127,7 +128,7 @@ function joinRoom() { send({ type: "join_room", code: savedCode }); }
 
 function handleGameMessage(d) {
   if (d.msg === "your_turn") { myTurn = true; show("turn"); navigator.vibrate?.(200); }
-  if (d.msg === "turn_over") { myTurn = false; gripped = false; show("wait"); }
+  if (d.msg === "turn_over") { myTurn = false; gripped = false; resetGripUI(); show("wait"); }
 }
 
 // ---------- join: sensor permission + undo-popup fix + fullscreen ----------
@@ -159,32 +160,26 @@ $("btn-join").onclick = async () => {
 };
 
 // ---------- sensors ----------
-// Division of labour:
-//   GYRO    rotationRate.beta  -> throw speed (instant, unfiltered)
-//   GYRO    rotationRate.gamma -> wrist twist -> spin, AFTER removing the
-//           part of gamma that's just the swing leaking in (see below)
-//   GRAVITY                    -> swing angle + lean (drift-free, slow phases)
-//
-// Spin bleed cancellation: gamma only equals pure wrist twist if the phone is
-// perfectly aligned with the swing plane — real grips never are, so the swing
-// leaks into gamma proportionally to swing speed. Each throw we fit that
-// proportion (slope of twist vs speed over the whole grip) and measure the
-// flick as the residual. Auto-calibrates per player, per throw.
+// One taught grip: phone flat in the palm, screen up, like holding the ball.
+//   GYRO    rotationRate.beta -> throw speed (instant, honest at any speed)
+//   GRAVITY                   -> swing angle, lean, and SPIN:
+// spin is the phone's sideways roll AT THE MOMENT OF GRIP — a slow, still
+// moment where gravity is trustworthy. Hold it flat for a straight ball,
+// grab it rolled for a hook. (Wii Sports set spin the same way.)
 
 let gx = 0, gy = 0, gz = 9.8;  // low-passed gravity (device frame)
 let px = 0, py = 0, pz = 1;    // previous gravity direction (unit vector)
+let gravY = 0;                 // gravity along the long axis (grip-pose check)
 
 let swing = 0;        // accumulated swing angle (deg), zeroed at grip
-let tilt = 0;         // lean (deg), relative to grip pose — for slow aiming only
-let tiltRaw = 0;      // absolute sideways gravity angle
+let tilt = 0;         // lean (deg), relative to grip pose — slow aiming only
+let tiltRaw = 0;      // absolute sideways roll, 0 = flat in the palm
 let tiltZero = 0;     // tiltRaw captured at grip
+let spinPreset = 0;   // spin locked in at grip
 let gripped = false;
 let velocity = 0;     // deg/s about the swing axis (gyro)
-let twist = 0;        // deg/s about the long axis (gyro, contaminated by swing)
-let sumVV = 0;        // bleed-fit accumulators (reset each grip)
-let sumVW = 0;
 let lastTime = 0;
-let velHistory = [];  // recent {t, v, w} samples for the release maths
+let velHistory = [];  // recent {t, v} samples for the release maths
 
 function startSensors() {
   window.addEventListener("devicemotion", (e) => {
@@ -198,8 +193,9 @@ function startSensors() {
     // normalise to a direction
     const len = Math.hypot(gx, gy, gz) || 1;
     const nx = gx / len, ny = gy / len, nz = gz / len;
+    gravY = ny;
 
-    // lean: how far gravity tips along the phone's x axis (slow-phase use only)
+    // sideways roll: how far gravity tips along the phone's x axis
     tiltRaw = Math.asin(Math.max(-1, Math.min(1, nx))) * 180 / Math.PI;
     tilt = tiltRaw - tiltZero;
 
@@ -214,22 +210,16 @@ function startSensors() {
       const dt = (now - lastTime) / 1000;
       lastTime = now;
 
-      // SPEED + TWIST: straight off the gyro
+      // SPEED: straight off the gyro — honest even mid fast swing
       const gyro = e.rotationRate;
       if (gyro && gyro.beta != null) {
-        velocity = gyro.beta;                  // swing axis
-        twist = gyro.gamma ?? 0;               // long axis (swing-contaminated)
+        velocity = gyro.beta;
       } else if (dt > 0) {
         // rare gyro-less device: fall back to differentiated gravity angle
         velocity = velocity * 0.7 + (delta / dt) * 0.3;
-        twist = 0;
       }
 
-      // accumulate the bleed fit over the whole grip
-      sumVV += velocity * velocity;
-      sumVW += velocity * twist;
-
-      velHistory.push({ t: now, v: velocity, w: twist });
+      velHistory.push({ t: now, v: velocity });
       while (velHistory.length && now - velHistory[0].t > 200) velHistory.shift();
     }
     px = nx; py = ny; pz = nz;
@@ -251,17 +241,27 @@ const grip = $("grip");
 grip.addEventListener("touchstart", (e) => {
   e.preventDefault();
   if (!myTurn || gripped) return;
+
+  // grip-pose check: if gravity runs along the long axis, the phone is
+  // upright, not flat in the palm — teach instead of silently misreading
+  if (Math.abs(gravY) > 0.8) {
+    grip.textContent = "LAY THE PHONE FLAT\nIN YOUR PALM!";
+    navigator.vibrate?.([40, 40, 40]);
+    setTimeout(resetGripUI, 1200);
+    return;
+  }
+
   gripped = true;
   swing = 0;             // this grip pose is the arm's start position
-  tiltZero = tiltRaw;    // ...and its neutral lean
+  tiltZero = tiltRaw;    // lean is measured relative to it...
+  spinPreset = Math.max(-1, Math.min(1, tiltRaw / FULL_SPIN_TILT));
+  if (Math.abs(spinPreset) < SPIN_DEADZONE) spinPreset = 0;
   velocity = 0;
-  twist = 0;
-  sumVV = 0;
-  sumVW = 0;
   velHistory = [];
   lastTime = performance.now();
   grip.classList.add("held");
-  grip.textContent = "SWING!";
+  grip.textContent = spinPreset == 0 ? "SWING!"
+    : (spinPreset < 0 ? "◀ HOOK  —  SWING!" : "SWING!  —  HOOK ▶");
   navigator.vibrate?.(80);
   send({ type: "grip" });
 }, { passive: false });
@@ -273,23 +273,15 @@ grip.addEventListener("touchend", (e) => {
   gripped = false;
   resetGripUI();
 
-  // how much of gamma was just the swing leaking in, for THIS grip
-  const slope = sumVV > 1 ? sumVW / sumVV : 0;
-
-  // peak swing speed and peak residual flick over the final 200ms
-  let peak = 0, peakFlick = 0;
+  // peak swing speed over the final 200ms
+  let peak = 0;
   for (const s of velHistory) {
     if (Math.abs(s.v) > Math.abs(peak)) peak = s.v;
-    const flick = s.w - slope * s.v;          // twist with the swing removed
-    if (Math.abs(flick) > Math.abs(peakFlick)) peakFlick = flick;
   }
-
-  let spin = Math.max(-1, Math.min(1, peakFlick / FULL_TWIST));
-  if (Math.abs(spin) < SPIN_DEADZONE) spin = 0;   // straight means straight
 
   send({ type: "throw",
          speed: Math.round(Math.abs(peak)),       // deg/s
-         spin:  spin,                             // -1 … +1, 0 if no real flick
+         spin:  spinPreset,                       // set by roll at grip
          angle: Math.round(swing * 10) / 10 });   // arm angle at release
   velHistory = [];
   navigator.vibrate?.([60, 40, 60]);
