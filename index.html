@@ -61,7 +61,7 @@
 <div class="screen" id="screen-turn">
   <div class="big">YOUR TURN</div>
   <p class="hint">Lay the phone flat in your palm like a ball.<br>
-     Swing and let go to throw —<br>tilt left or right as you release for spin!</p>
+     Tilt left or right for spin.<br>Swing and let go to throw!</p>
   <div id="grip">HOLD TO GRIP</div>
 </div>
 
@@ -70,9 +70,9 @@ const RELAY_URL = "wss://pin-heads-relay.onrender.com";
 // LAN testing from a desktop browser: "ws://localhost:8080"
 
 // ---------- tuning ----------
-const FULL_SPIN_TILT = 40;    // degrees of roll at release = maximum spin (±1)
-const SPIN_DEADZONE  = 0.15;  // below this, the throw counts as dead straight
-const GAMMA_SIGN     = 1;     // set to -1 if spin drifts opposite to your tilt
+const FULL_SPIN_TILT = 80;    // degrees of roll at release = maximum spin (±1)
+const SPIN_DEADZONE  = 0.1;   // below this, the throw counts as dead straight
+const GAMMA_SIGN     = 1;     // flip to -1 if tilt springs back / reads mirrored
 
 // ---------- persistent identity ----------
 let token = localStorage.getItem("player_token");
@@ -163,21 +163,22 @@ $("btn-join").onclick = async () => {
 // ---------- sensors ----------
 // One taught grip: phone flat in the palm, screen up, like holding the ball.
 //   GYRO    rotationRate.beta  -> throw speed (instant, honest at any speed)
-//   GYRO+GRAVITY hybrid        -> ROLL AT RELEASE -> spin:
-// gravity gives a trustworthy roll angle at the still grip moment, then the
-// gyro (immune to motion noise) tracks roll changes through the fast swing.
-// rollAngle = roll_at_grip + integrated gyro. Tilt left at release = -1,
-// tilt right = +1.
+//   GYRO+GRAVITY complementary -> ROLL, accurate at any speed:
+//     the gyro integrates roll instantly (works mid-flick, mid-swing) and
+//     gravity gently corrects its drift, but ONLY while the phone is moving
+//     slowly enough for gravity to be trusted. Each sensor covers the
+//     other's weakness — same idea as Wii MotionPlus.
+//   GRAVITY                    -> swing angle (drift-free pendulum tracking)
 
 let gx = 0, gy = 0, gz = 9.8;  // low-passed gravity (device frame)
 let px = 0, py = 0, pz = 1;    // previous gravity direction (unit vector)
 let gravY = 0;                 // gravity along the long axis (grip-pose check)
 
 let swing = 0;        // accumulated swing angle (deg), zeroed at grip
-let tilt = 0;         // lean (deg), relative to grip pose — slow aiming only
-let tiltRaw = 0;      // absolute sideways roll from gravity, 0 = flat
-let tiltZero = 0;     // tiltRaw captured at grip
-let rollAngle = 0;    // live roll during the swing: gravity-anchored, gyro-tracked
+let roll = 0;         // complementary-filtered roll (deg), 0 = flat
+let rollZero = 0;     // roll captured at grip
+let tilt = 0;         // roll relative to grip pose — streamed + used for spin
+let tiltRaw = 0;      // gravity-only roll (the filter's slow correction target)
 let gripped = false;
 let velocity = 0;     // deg/s about the swing axis (gyro)
 let lastTime = 0;
@@ -187,6 +188,11 @@ function startSensors() {
   window.addEventListener("devicemotion", (e) => {
     const g = e.accelerationIncludingGravity;
     if (!g) return;
+
+    const now = performance.now();
+    const dt = lastTime > 0 ? (now - lastTime) / 1000 : 0;
+    lastTime = now;
+
     const k = 0.3;
     gx += k * ((g.x ?? 0) - gx);
     gy += k * ((g.y ?? 0) - gy);
@@ -197,33 +203,33 @@ function startSensors() {
     const nx = gx / len, ny = gy / len, nz = gz / len;
     gravY = ny;
 
-    // sideways roll from gravity (trustworthy only when slow)
+    // gravity-only roll (trustworthy only when slow — used as drift anchor)
     tiltRaw = Math.asin(Math.max(-1, Math.min(1, nx))) * 180 / Math.PI;
-    tilt = tiltRaw - tiltZero;
+
+    // ----- complementary filter: gyro carries, gravity corrects when calm -----
+    const gyro = e.rotationRate;
+    const rollRate = GAMMA_SIGN * (gyro?.gamma ?? 0);
+    if (dt > 0 && dt < 0.2) {
+      roll += rollRate * dt;                       // instant tracking, any speed
+      const rawAccelMag = Math.hypot(g.x ?? 0, g.y ?? 0, g.z ?? 0);
+      const calm = Math.abs(rawAccelMag - 9.81) < 1.5 &&
+                   Math.abs(gyro?.beta ?? 0) < 60;
+      if (calm) roll += (tiltRaw - roll) * 0.05;   // gentle drift correction
+    }
+    tilt = roll - rollZero;
 
     if (gripped) {
-      // ANGLE: signed gravity rotation about the x axis since last frame
+      // SWING ANGLE: signed gravity rotation about the x axis since last frame
       const crossX = py * nz - pz * ny;        // (prev × now).x
       const dot = px * nx + py * ny + pz * nz;
       const delta = Math.atan2(crossX, dot) * 180 / Math.PI;
       swing += delta;
 
-      const now = performance.now();
-      const dt = (now - lastTime) / 1000;
-      lastTime = now;
-
-      const gyro = e.rotationRate;
+      // SPEED: straight off the gyro
       if (gyro && gyro.beta != null) {
-        // SPEED: straight off the gyro
         velocity = gyro.beta;
-        // ROLL: integrate the long-axis gyro on top of the grip-time anchor
-        if (dt > 0 && dt < 0.2) {
-          rollAngle += GAMMA_SIGN * (gyro.gamma ?? 0) * dt;
-        }
       } else if (dt > 0) {
-        // rare gyro-less device: gravity fallbacks for both
         velocity = velocity * 0.7 + (delta / dt) * 0.3;
-        rollAngle = tiltRaw;
       }
 
       velHistory.push({ t: now, v: velocity });
@@ -260,11 +266,9 @@ grip.addEventListener("touchstart", (e) => {
 
   gripped = true;
   swing = 0;             // this grip pose is the arm's start position
-  tiltZero = tiltRaw;    // lean is measured relative to it
-  rollAngle = tiltRaw;   // anchor the roll tracker to honest gravity
+  rollZero = roll;       // ...and its neutral roll
   velocity = 0;
   velHistory = [];
-  lastTime = performance.now();
   grip.classList.add("held");
   grip.textContent = "SWING!";
   navigator.vibrate?.(80);
@@ -284,12 +288,13 @@ grip.addEventListener("touchend", (e) => {
     if (Math.abs(s.v) > Math.abs(peak)) peak = s.v;
   }
 
-  let spin = tilt
-  if (Math.abs(spin) < 0.1) spin = 0;
+  // spin: the roll at this exact instant — held tilt OR last-moment flick
+  let spin = Math.max(-1, Math.min(1, tilt / FULL_SPIN_TILT));
+  if (Math.abs(spin) < SPIN_DEADZONE) spin = 0;
 
   send({ type: "throw",
          speed: Math.round(Math.abs(peak)),       // deg/s
-         spin:  spin,
+         spin:  spin,                             // -1 full left … +1 full right
          angle: Math.round(swing * 10) / 10 });   // arm angle at release
   velHistory = [];
   navigator.vibrate?.([60, 40, 60]);
