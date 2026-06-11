@@ -61,7 +61,7 @@
 <div class="screen" id="screen-turn">
   <div class="big">YOUR TURN</div>
   <p class="hint">Lay the phone flat in your palm like a ball.<br>
-     Tilt it sideways for spin. Swing and let go to throw!</p>
+     Swing and let go to throw —<br>tilt left or right as you release for spin!</p>
   <div id="grip">HOLD TO GRIP</div>
 </div>
 
@@ -70,8 +70,9 @@ const RELAY_URL = "wss://pin-heads-relay.onrender.com";
 // LAN testing from a desktop browser: "ws://localhost:8080"
 
 // ---------- tuning ----------
-const FULL_SPIN_TILT = 35;    // degrees of roll at grip = maximum hook
+const FULL_SPIN_TILT = 40;    // degrees of roll at release = maximum spin (±1)
 const SPIN_DEADZONE  = 0.15;  // below this, the throw counts as dead straight
+const GAMMA_SIGN     = 1;     // set to -1 if spin drifts opposite to your tilt
 
 // ---------- persistent identity ----------
 let token = localStorage.getItem("player_token");
@@ -161,11 +162,12 @@ $("btn-join").onclick = async () => {
 
 // ---------- sensors ----------
 // One taught grip: phone flat in the palm, screen up, like holding the ball.
-//   GYRO    rotationRate.beta -> throw speed (instant, honest at any speed)
-//   GRAVITY                   -> swing angle, lean, and SPIN:
-// spin is the phone's sideways roll AT THE MOMENT OF GRIP — a slow, still
-// moment where gravity is trustworthy. Hold it flat for a straight ball,
-// grab it rolled for a hook. (Wii Sports set spin the same way.)
+//   GYRO    rotationRate.beta  -> throw speed (instant, honest at any speed)
+//   GYRO+GRAVITY hybrid        -> ROLL AT RELEASE -> spin:
+// gravity gives a trustworthy roll angle at the still grip moment, then the
+// gyro (immune to motion noise) tracks roll changes through the fast swing.
+// rollAngle = roll_at_grip + integrated gyro. Tilt left at release = -1,
+// tilt right = +1.
 
 let gx = 0, gy = 0, gz = 9.8;  // low-passed gravity (device frame)
 let px = 0, py = 0, pz = 1;    // previous gravity direction (unit vector)
@@ -173,9 +175,9 @@ let gravY = 0;                 // gravity along the long axis (grip-pose check)
 
 let swing = 0;        // accumulated swing angle (deg), zeroed at grip
 let tilt = 0;         // lean (deg), relative to grip pose — slow aiming only
-let tiltRaw = 0;      // absolute sideways roll, 0 = flat in the palm
+let tiltRaw = 0;      // absolute sideways roll from gravity, 0 = flat
 let tiltZero = 0;     // tiltRaw captured at grip
-let spinPreset = 0;   // spin locked in at grip
+let rollAngle = 0;    // live roll during the swing: gravity-anchored, gyro-tracked
 let gripped = false;
 let velocity = 0;     // deg/s about the swing axis (gyro)
 let lastTime = 0;
@@ -195,7 +197,7 @@ function startSensors() {
     const nx = gx / len, ny = gy / len, nz = gz / len;
     gravY = ny;
 
-    // sideways roll: how far gravity tips along the phone's x axis
+    // sideways roll from gravity (trustworthy only when slow)
     tiltRaw = Math.asin(Math.max(-1, Math.min(1, nx))) * 180 / Math.PI;
     tilt = tiltRaw - tiltZero;
 
@@ -210,13 +212,18 @@ function startSensors() {
       const dt = (now - lastTime) / 1000;
       lastTime = now;
 
-      // SPEED: straight off the gyro — honest even mid fast swing
       const gyro = e.rotationRate;
       if (gyro && gyro.beta != null) {
+        // SPEED: straight off the gyro
         velocity = gyro.beta;
+        // ROLL: integrate the long-axis gyro on top of the grip-time anchor
+        if (dt > 0 && dt < 0.2) {
+          rollAngle += GAMMA_SIGN * (gyro.gamma ?? 0) * dt;
+        }
       } else if (dt > 0) {
-        // rare gyro-less device: fall back to differentiated gravity angle
+        // rare gyro-less device: gravity fallbacks for both
         velocity = velocity * 0.7 + (delta / dt) * 0.3;
+        rollAngle = tiltRaw;
       }
 
       velHistory.push({ t: now, v: velocity });
@@ -253,15 +260,13 @@ grip.addEventListener("touchstart", (e) => {
 
   gripped = true;
   swing = 0;             // this grip pose is the arm's start position
-  tiltZero = tiltRaw;    // lean is measured relative to it...
-  spinPreset = Math.max(-1, Math.min(1, tiltRaw / FULL_SPIN_TILT));
-  if (Math.abs(spinPreset) < SPIN_DEADZONE) spinPreset = 0;
+  tiltZero = tiltRaw;    // lean is measured relative to it
+  rollAngle = tiltRaw;   // anchor the roll tracker to honest gravity
   velocity = 0;
   velHistory = [];
   lastTime = performance.now();
   grip.classList.add("held");
-  grip.textContent = spinPreset == 0 ? "SWING!"
-    : (spinPreset < 0 ? "◀ HOOK  —  SWING!" : "SWING!  —  HOOK ▶");
+  grip.textContent = "SWING!";
   navigator.vibrate?.(80);
   send({ type: "grip" });
 }, { passive: false });
@@ -279,9 +284,13 @@ grip.addEventListener("touchend", (e) => {
     if (Math.abs(s.v) > Math.abs(peak)) peak = s.v;
   }
 
+  // spin: the phone's roll at this exact moment. -1 full left, +1 full right
+  let spin = Math.max(-1, Math.min(1, rollAngle / FULL_SPIN_TILT));
+  if (Math.abs(spin) < SPIN_DEADZONE) spin = 0;
+
   send({ type: "throw",
          speed: Math.round(Math.abs(peak)),       // deg/s
-         spin:  spinPreset,                       // set by roll at grip
+         spin:  spin,
          angle: Math.round(swing * 10) / 10 });   // arm angle at release
   velHistory = [];
   navigator.vibrate?.([60, 40, 60]);
