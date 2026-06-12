@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
 <title>Pin Pals — Controller</title>
 <style>
-  :root { --bg:#14101f; --card:#221a35; --accent:#ffb347; --text:#f5f0ff; }
+  :root { --bg:#14101f; --card:#221a35; --accent:#ffb347; --blue:#6fb3ff; --text:#f5f0ff; }
   * { box-sizing:border-box; margin:0; -webkit-tap-highlight-color:transparent; }
   body { background:var(--bg); color:var(--text); font-family:system-ui,sans-serif;
          min-height:100dvh; display:flex; align-items:center; justify-content:center;
@@ -19,12 +19,25 @@
   button { width:100%; padding:16px; font-size:1.2rem; font-weight:700; border:none;
            border-radius:12px; background:var(--accent); color:#14101f; }
   button:active { transform:scale(.97); }
-  .big { font-size:2rem; padding:40px 16px; border-radius:20px; background:var(--card); margin-bottom:16px; }
-  .hint { opacity:.65; margin-top:14px; font-size:.95rem; }
+  .big { font-size:2rem; padding:30px 16px; border-radius:20px; background:var(--card); margin-bottom:12px; }
+  .hint { opacity:.65; margin-top:12px; font-size:.9rem; }
   #status { position:fixed; top:10px; left:0; right:0; font-size:.8rem; opacity:.5; text-align:center; }
 
+  /* setup buttons: MOVE and ROTATE, side by side above the grip zone */
+  #setup {
+    position:fixed; left:0; right:0; bottom:48dvh; height:14dvh;
+    display:flex; gap:10px; padding:0 10px;
+  }
+  .holdbtn {
+    flex:1; background:var(--card); border:3px solid var(--blue); border-radius:18px;
+    display:flex; align-items:center; justify-content:center;
+    font-size:1.1rem; font-weight:800; letter-spacing:.05em;
+    touch-action:none; user-select:none; -webkit-user-select:none; color:var(--blue);
+  }
+  .holdbtn.held { background:var(--blue); color:#14101f; }
+
   #grip {
-    position:fixed; left:0; right:0; bottom:0; height:62dvh;
+    position:fixed; left:0; right:0; bottom:0; height:46dvh;
     background:var(--card); border-top:4px solid var(--accent);
     border-radius:28px 28px 0 0; touch-action:none; user-select:none;
     -webkit-user-select:none; display:flex; align-items:center; justify-content:center;
@@ -60,8 +73,12 @@
 
 <div class="screen" id="screen-turn">
   <div class="big">YOUR TURN</div>
-  <p class="hint">Lay the phone flat in your palm like a ball.<br>
-     Tilt left or right for spin.<br>Swing and let go to throw!</p>
+  <p class="hint">Hold MOVE or ROTATE and tilt the phone to set up.<br>
+     Then hold the orange zone, swing, and let go!</p>
+  <div id="setup">
+    <div class="holdbtn" id="btn-move">⬌ MOVE</div>
+    <div class="holdbtn" id="btn-rotate">⟲ ROTATE</div>
+  </div>
   <div id="grip">HOLD TO GRIP</div>
 </div>
 
@@ -100,7 +117,7 @@ function connect() {
   };
   ws.onclose = () => {
     $("status").textContent = "reconnecting…";
-    joined = false; myTurn = false; gripped = false;
+    joined = false; myTurn = false; gripped = false; holdMode = null;
     setTimeout(connect, 1500);
   };
   ws.onmessage = (e) => {
@@ -127,7 +144,10 @@ function joinRoom() { send({ type: "join_room", code: savedCode }); }
 
 function handleGameMessage(d) {
   if (d.msg === "your_turn") { myTurn = true; show("turn"); navigator.vibrate?.(200); }
-  if (d.msg === "turn_over") { myTurn = false; gripped = false; resetGripUI(); show("wait"); }
+  if (d.msg === "turn_over") {
+    myTurn = false; gripped = false; holdMode = null;
+    resetGripUI(); resetSetupUI(); show("wait");
+  }
 }
 
 // ---------- join: sensor permission + undo-popup fix + fullscreen ----------
@@ -160,21 +180,20 @@ $("btn-join").onclick = async () => {
 
 // ---------- sensors ----------
 //   TILT:  raw deviceorientation gamma — the phone's own tilt value, as-is.
-//          -90 = fully left, +90 = fully right, 0 = flat.
 //   SPEED: gyro rotationRate.beta — instant angular velocity.
-//   SWING ANGLE: gravity rotation about the phone's x axis, accumulated,
-//          zeroed at grip.
+//   SWING ANGLE: gravity rotation about the phone's x axis, zeroed at grip.
 
 let gx = 0, gy = 0, gz = 9.8;  // low-passed gravity (swing angle + pose check)
 let px = 0, py = 0, pz = 1;    // previous gravity direction (unit vector)
 let gravY = 0;                 // gravity along the long axis (grip-pose check)
 
-let tilt = 0;         // RAW phone tilt, straight from the OS
-let swing = 0;        // accumulated swing angle (deg), zeroed at grip
+let tilt = 0;            // RAW phone tilt, straight from the OS
+let swing = 0;           // accumulated swing angle (deg), zeroed at grip
 let gripped = false;
-let velocity = 0;     // deg/s about the swing axis (gyro)
+let holdMode = null;     // null | "aim" | "rotate"  (setup buttons)
+let velocity = 0;        // deg/s about the swing axis (gyro)
 let lastTime = 0;
-let velHistory = [];  // recent {t, v} samples for the release maths
+let velHistory = [];     // recent {t, v} samples for the release maths
 
 function startSensors() {
   // raw tilt, no processing
@@ -219,9 +238,13 @@ function startSensors() {
     px = nx; py = ny; pz = nz;
   });
 
-  // stream while gripped, ~25Hz
+  // stream at ~25Hz: setup tilt while a setup button is held, swing while gripped
   setInterval(() => {
-    if (joined && myTurn && gripped) {
+    if (!joined || !myTurn) return;
+    if (holdMode) {
+      send({ type: holdMode,                       // "aim" or "rotate"
+             tilt: Math.round(tilt * 10) / 10 });
+    } else if (gripped) {
       send({ type: "motion",
              tilt:  Math.round(tilt * 10) / 10,
              swing: Math.round(swing * 10) / 10 });
@@ -229,12 +252,38 @@ function startSensors() {
   }, 40);
 }
 
+// ---------- setup buttons: MOVE and ROTATE ----------
+function bindHoldButton(el, mode) {
+  el.addEventListener("touchstart", (e) => {
+    e.preventDefault();
+    if (!myTurn || gripped) return;
+    holdMode = mode;
+    el.classList.add("held");
+    navigator.vibrate?.(40);
+  }, { passive: false });
+
+  const end = (e) => {
+    e.preventDefault();
+    if (holdMode === mode) holdMode = null;
+    el.classList.remove("held");
+  };
+  el.addEventListener("touchend", end, { passive: false });
+  el.addEventListener("touchcancel", end, { passive: false });
+}
+bindHoldButton($("btn-move"), "aim");
+bindHoldButton($("btn-rotate"), "rotate");
+
+function resetSetupUI() {
+  $("btn-move").classList.remove("held");
+  $("btn-rotate").classList.remove("held");
+}
+
 // ---------- grip button ----------
 const grip = $("grip");
 
 grip.addEventListener("touchstart", (e) => {
   e.preventDefault();
-  if (!myTurn || gripped) return;
+  if (!myTurn || gripped || holdMode) return;
 
   // grip-pose check: if gravity runs along the long axis, the phone is
   // upright, not flat in the palm — teach instead of silently misreading
