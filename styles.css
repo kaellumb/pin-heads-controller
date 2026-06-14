@@ -1,0 +1,49 @@
+:root { --bg:#14101f; --card:#221a35; --accent:#ffb347; --blue:#6fb3ff; --text:#f5f0ff; }
+* { box-sizing:border-box; margin:0; -webkit-tap-highlight-color:transparent; }
+body { background:var(--bg); color:var(--text); font-family:system-ui,sans-serif;
+       min-height:100dvh; display:flex; align-items:center; justify-content:center;
+       overscroll-behavior:none; }
+.screen { display:none; width:100%; max-width:420px; padding:24px; text-align:center; }
+.screen.active { display:block; }
+h1 { font-size:1.6rem; margin-bottom:20px; letter-spacing:.04em; }
+input { width:100%; padding:14px; margin-bottom:12px; font-size:1.2rem; border-radius:12px;
+        border:2px solid #443566; background:var(--card); color:var(--text); text-align:center; }
+input#code { text-transform:uppercase; letter-spacing:.4em; font-weight:700; }
+button { width:100%; padding:16px; font-size:1.2rem; font-weight:700; border:none;
+         border-radius:12px; background:var(--accent); color:#14101f; }
+button:active { transform:scale(.97); }
+.big { font-size:2rem; padding:30px 16px; border-radius:20px; background:var(--card); margin-bottom:12px; }
+.hint { opacity:.65; margin-top:12px; font-size:.9rem; }
+#status { position:fixed; top:10px; left:0; right:0; font-size:.8rem; opacity:.5; text-align:center; }
+
+/* setup buttons: MOVE and ROTATE, side by side above the grip zone */
+#setup {
+  position:fixed; left:0; right:0; bottom:48dvh; height:14dvh;
+  display:flex; gap:10px; padding:0 10px;
+}
+.holdbtn {
+  flex:1; background:var(--card); border:3px solid var(--blue); border-radius:18px;
+  display:flex; align-items:center; justify-content:center;
+  font-size:1.1rem; font-weight:800; letter-spacing:.05em;
+  touch-action:none; user-select:none; -webkit-user-select:none; color:var(--blue);
+}
+.holdbtn.held { background:var(--blue); color:#14101f; }
+
+#grip {
+  position:fixed; left:0; right:0; bottom:0; height:46dvh;
+  background:var(--card); border-top:4px solid var(--accent);
+  border-radius:28px 28px 0 0; touch-action:none; user-select:none;
+  -webkit-user-select:none; display:flex; align-items:center; justify-content:center;
+  font-size:1.5rem; font-weight:800; letter-spacing:.05em; text-align:center;
+}
+#grip.held { background:var(--accent); color:#14101f; }
+
+/* iOS can't lock orientation — nag instead */
+@media (orientation: landscape) {
+  body::after {
+    content:"↻ Turn your phone upright!";
+    position:fixed; inset:0; background:var(--bg); z-index:99;
+    display:flex; align-items:center; justify-content:center; font-size:1.6rem;
+  }
+}
+
