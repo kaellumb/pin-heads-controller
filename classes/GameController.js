@@ -5,10 +5,13 @@ class GameController {
     this.fullSpinTilt = fullSpinTilt;
 
     this.myTurn = false;
+    this.moveLocked = false;
     this.gripped = false;
     this.holdMode = null; // null, "aim", "rotate"
 
     this._grip = document.getElementById("grip");
+    this._moveButton = document.getElementById("btn-move");
+    this._rotateButton = document.getElementById("btn-rotate");
 
     this._bindSetupButtons();
     this._bindGrip();
@@ -23,28 +26,36 @@ class GameController {
   handleGameMessage(d) {
     if (d.msg === "your_turn") {
       this.myTurn = true;
+      this._setMoveLocked(false);
       this.show("turn");
       navigator.vibrate?.(200);
     }
     if (d.msg === "turn_over") {
       this.myTurn = false;
+      this._setMoveLocked(false);
       this._setGripped(false);
       this.holdMode = null;
       this._resetGripUI();
       this._resetSetupUI();
       this.show("wait");
     }
+    if (d.msg === "move_locked") {
+      this._setMoveLocked(true);
+    }
+    if (d.msg === "move_unlocked") {
+      this._setMoveLocked(false);
+    }
   }
 
   _bindSetupButtons() {
-    this._bindHoldButton(document.getElementById("btn-move"), "aim");
-    this._bindHoldButton(document.getElementById("btn-rotate"), "rotate");
+    this._bindHoldButton(this._moveButton, "aim");
+    this._bindHoldButton(this._rotateButton, "rotate");
   }
 
   _bindHoldButton(el, mode) {
     el.addEventListener("touchstart", (e) => {
       e.preventDefault();
-      if (!this.myTurn || this.gripped) return;
+      if (!this.myTurn || this.moveLocked || this.gripped) return;
       this.holdMode = mode;
       el.classList.add("held");
       navigator.vibrate?.(40);
@@ -60,8 +71,8 @@ class GameController {
   }
 
   _resetSetupUI() {
-    document.getElementById("btn-move").classList.remove("held");
-    document.getElementById("btn-rotate").classList.remove("held");
+    this._moveButton.classList.remove("held");
+    this._rotateButton.classList.remove("held");
   }
 
 
@@ -70,7 +81,7 @@ class GameController {
 
     grip.addEventListener("touchstart", (e) => {
       e.preventDefault();
-      if (!this.myTurn || this.gripped || this.holdMode) return;
+      if (!this.myTurn || this.moveLocked || this.gripped || this.holdMode) return;
 
       // grip-pose check: phone must be flat in palm, not held upright
       if (Math.abs(this.sensors.gravY) > 0.8) {
@@ -91,7 +102,7 @@ class GameController {
     // deliberate release = throw
     grip.addEventListener("touchend", (e) => {
       e.preventDefault();
-      if (!this.gripped) return;
+      if (!this.gripped || this.moveLocked) return;
       this._setGripped(false);
       this._resetGripUI();
 
@@ -135,11 +146,23 @@ class GameController {
     this.sensors.gripped = val;
   }
 
+  _setMoveLocked(val) {
+    this.moveLocked = val;
+    document.body.classList.toggle("move-locked", val);
+
+    if (val) {
+      this.holdMode = null;
+      this._setGripped(false);
+      this._resetSetupUI();
+      this._resetGripUI();
+    }
+  }
+
   // ---------- stream (25 Hz) ----------
 
   _startStream() {
     setInterval(() => {
-      if (!this.connection.joined || !this.myTurn) return;
+      if (!this.connection.joined || !this.myTurn || this.moveLocked) return;
       if (this.holdMode) {
         this.connection.send({
           type: this.holdMode,
