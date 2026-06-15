@@ -147,11 +147,20 @@ class GameController {
   }
 
   _setMoveLocked(val) {
+    const wasGripped = this.gripped;
+
     this.moveLocked = val;
     document.body.classList.toggle("move-locked", val);
 
     if (val) {
       this.holdMode = null;
+
+      // If we were mid-grip, cancel it explicitly so server/client state stays aligned.
+      if (wasGripped && this.connection.joined && this.myTurn) {
+        this.connection.send({ type: "grip_cancel" });
+        this.sensors.velHistory = [];
+      }
+
       this._setGripped(false);
       this._resetSetupUI();
       this._resetGripUI();
