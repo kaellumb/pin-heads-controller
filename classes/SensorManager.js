@@ -13,6 +13,12 @@ class SensorManager {
     this._gravity = { x: 0, y: 0, z: 9.8 };
     this._gyroBias = { alpha: 0, beta: 0, gamma: 0 };
     this._gyroSamples = [];
+    this._rawPosePitch = 0;
+    this._rawPoseRoll = 0;
+    this._rawPoseYaw = 0;
+    this._poseZeroPitch = 0;
+    this._poseZeroRoll = 0;
+    this._poseZeroYaw = 0;
     this._swingAxis = "beta";
     this._tiltSign = -1;
     this._lastMotionTime = 0;
@@ -46,6 +52,13 @@ class SensorManager {
     this._swingAxis = "beta";
   }
 
+  recenterPose() {
+    this._poseZeroPitch = this._rawPosePitch;
+    this._poseZeroRoll = this._rawPoseRoll;
+    this._poseZeroYaw = this._rawPoseYaw;
+    this._applyPoseOffsets();
+  }
+
   _handleDeviceOrientation(e) {
     this._orientationEvents += 1;
     const hasAlpha = Number.isFinite(e.alpha);
@@ -70,9 +83,10 @@ class SensorManager {
       const magnitude = Math.abs(nextPitch ?? 0) + Math.abs(nextRoll ?? 0) + Math.abs(nextYaw ?? 0);
       if (changed || magnitude > 0.5) {
         this._hasUsableOrientation = true;
-        this.posePitch = nextPitch ?? this.posePitch;
-        this.poseRoll = nextRoll ?? this.poseRoll;
-        this.poseYaw = nextYaw ?? this.poseYaw;
+        this._rawPosePitch = nextPitch ?? this._rawPosePitch;
+        this._rawPoseRoll = nextRoll ?? this._rawPoseRoll;
+        this._rawPoseYaw = nextYaw ?? this._rawPoseYaw;
+        this._applyPoseOffsets();
       }
       this._lastOrientationSample = { pitch: nextPitch, roll: nextRoll, yaw: nextYaw };
     }
@@ -154,15 +168,17 @@ class SensorManager {
   _updatePoseFromGyro(rate, dt) {
     if (this._hasUsableOrientation || !rate || dt <= 0 || dt >= 0.2) return;
 
-    this.poseYaw = this._normalizeAngle(this.poseYaw + rate.alpha * dt);
-    this.posePitch = this._normalizeAngle(this.posePitch + rate.beta * dt);
-    this.poseRoll = this._normalizeAngle(this.poseRoll + rate.gamma * dt);
+    this._rawPoseYaw = this._normalizeAngle(this._rawPoseYaw + rate.alpha * dt);
+    this._rawPosePitch = this._normalizeAngle(this._rawPosePitch + rate.beta * dt);
+    this._rawPoseRoll = this._normalizeAngle(this._rawPoseRoll + rate.gamma * dt);
 
-    if (!this._hasGravity) return;
+    if (this._hasGravity) {
+      const gravityPose = this._getGravityPose();
+      this._rawPosePitch = this._blendAngle(this._rawPosePitch, gravityPose.pitch, 0.08);
+      this._rawPoseRoll = this._blendAngle(this._rawPoseRoll, gravityPose.roll, 0.08);
+    }
 
-    const gravityPose = this._getGravityPose();
-    this.posePitch = this._blendAngle(this.posePitch, gravityPose.pitch, 0.08);
-    this.poseRoll = this._blendAngle(this.poseRoll, gravityPose.roll, 0.08);
+    this._applyPoseOffsets();
   }
 
   _normalizeRotationRate(rate) {
@@ -261,6 +277,12 @@ class SensorManager {
     return Math.abs(this._normalizeAngle(a - b));
   }
 
+  _applyPoseOffsets() {
+    this.posePitch = this._normalizeAngle(this._rawPosePitch - this._poseZeroPitch);
+    this.poseRoll = this._normalizeAngle(this._rawPoseRoll - this._poseZeroRoll);
+    this.poseYaw = this._normalizeAngle(this._rawPoseYaw - this._poseZeroYaw);
+  }
+
   getDebugState() {
     return {
       started: this._started,
@@ -273,6 +295,12 @@ class SensorManager {
       posePitch: this.posePitch,
       poseRoll: this.poseRoll,
       poseYaw: this.poseYaw,
+      rawPosePitch: this._rawPosePitch,
+      rawPoseRoll: this._rawPoseRoll,
+      rawPoseYaw: this._rawPoseYaw,
+      zeroPosePitch: this._poseZeroPitch,
+      zeroPoseRoll: this._poseZeroRoll,
+      zeroPoseYaw: this._poseZeroYaw,
       tilt: this.tilt,
       gravY: this.gravY,
     };

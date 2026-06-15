@@ -103,6 +103,7 @@ document.getElementById("btn-join").onclick = async () => {
   renderSensorDebug(`perm m=${motionPermission} o=${orientationPermission}`);
 
   sensors.start();
+  sensors.recenterPose();
   try { await navigator.wakeLock?.request("screen"); } catch {}
 
   // Android: fullscreen + portrait lock (no-ops on iOS)
@@ -151,6 +152,7 @@ function renderSensorDebug(prefix = "") {
     `p=${Math.round(state.posePitch * 10) / 10}`,
     `r=${Math.round(state.poseRoll * 10) / 10}`,
     `y=${Math.round(state.poseYaw * 10) / 10}`,
+    `zy=${Math.round(state.zeroPoseYaw * 10) / 10}`,
   ].filter(Boolean);
 
   sensorDebugEl.textContent = pieces.join(" | ");

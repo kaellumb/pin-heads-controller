@@ -12,9 +12,11 @@ class GameController {
     this._grip = document.getElementById("grip");
     this._moveButton = document.getElementById("btn-move");
     this._rotateButton = document.getElementById("btn-rotate");
+    this._centerButton = document.getElementById("btn-center");
     this._lastPoseLogTime = 0;
 
     this._bindSetupButtons();
+    this._bindCenterButton();
     this._bindGrip();
     this._startStream();
   }
@@ -51,6 +53,17 @@ class GameController {
   _bindSetupButtons() {
     this._bindHoldButton(this._moveButton, "aim");
     this._bindHoldButton(this._rotateButton, "rotate");
+  }
+
+  _bindCenterButton() {
+    const recenter = (e) => {
+      e.preventDefault();
+      this.sensors.recenterPose();
+      navigator.vibrate?.(30);
+    };
+
+    this._centerButton.addEventListener("click", recenter);
+    this._centerButton.addEventListener("touchstart", recenter, { passive: false });
   }
 
   _bindHoldButton(el, mode) {
