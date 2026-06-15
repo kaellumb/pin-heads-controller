@@ -39,6 +39,7 @@ const connection = new ConnectionManager(RELAY_URL, {
     game.gripped = false;
     sensors.gripped = false;
     game.holdMode = null;
+    game._setMoveLocked(false);
   },
 });
 
