@@ -42,14 +42,10 @@ button:active { transform:scale(.97); }
 #grip.held { background:var(--accent); color:#14101f; }
 .move-locked #grip {
   opacity:.45; filter:grayscale(1); border-top-color:#756b83; color:#aaa4b8;
-}
-.move-locked #grip::after {
-  content:"WAITING FOR PINS";
-}
-.move-locked #grip {
   font-size:0;
 }
 .move-locked #grip::after {
+  content:"WAITING FOR PINS";
   font-size:1.3rem; font-weight:800; letter-spacing:.05em;
 }
 
