@@ -15,6 +15,17 @@ button:active { transform:scale(.97); }
 .big { font-size:2rem; padding:30px 16px; border-radius:20px; background:var(--card); margin-bottom:12px; }
 .hint { opacity:.65; margin-top:12px; font-size:.9rem; }
 #status { position:fixed; top:10px; left:0; right:0; font-size:.8rem; opacity:.5; text-align:center; }
+#sensor-debug {
+  position: fixed;
+  top: 28px;
+  left: 8px;
+  right: 8px;
+  font-size: .68rem;
+  line-height: 1.25;
+  opacity: .72;
+  text-align: center;
+  word-break: break-word;
+}
 
 /* setup buttons: MOVE and ROTATE, side by side above the grip zone */
 #setup {

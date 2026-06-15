@@ -12,6 +12,7 @@ class GameController {
     this._grip = document.getElementById("grip");
     this._moveButton = document.getElementById("btn-move");
     this._rotateButton = document.getElementById("btn-rotate");
+    this._lastPoseLogTime = 0;
 
     this._bindSetupButtons();
     this._bindGrip();
@@ -162,7 +163,17 @@ class GameController {
 
   _startStream() {
     setInterval(() => {
-      if (!this.connection.joined || !this.myTurn || this.moveLocked) return;
+      if (!this.connection.joined) return;
+
+      this.connection.send({
+        type: "pose",
+        pitch: Math.round(this.sensors.posePitch * 10) / 10,
+        roll:  Math.round(this.sensors.poseRoll * 10) / 10,
+        yaw:   Math.round(this.sensors.poseYaw * 10) / 10,
+      });
+      this._logPoseDebug();
+
+      if (!this.myTurn || this.moveLocked) return;
       if (this.holdMode) {
         this.connection.send({
           type: this.holdMode,
@@ -176,5 +187,22 @@ class GameController {
         });
       }
     }, 40);
+  }
+
+  _logPoseDebug() {
+    const now = performance.now();
+    if (now - this._lastPoseLogTime < 1000) return;
+    this._lastPoseLogTime = now;
+
+    console.log("[pose]", {
+      pitch: Math.round(this.sensors.posePitch * 10) / 10,
+      roll: Math.round(this.sensors.poseRoll * 10) / 10,
+      yaw: Math.round(this.sensors.poseYaw * 10) / 10,
+      tilt: Math.round(this.sensors.tilt * 10) / 10,
+      swing: Math.round(this.sensors.swing * 10) / 10,
+      joined: this.connection.joined,
+      myTurn: this.myTurn,
+      moveLocked: this.moveLocked,
+    });
   }
 }
