@@ -28,6 +28,9 @@ button:active { transform:scale(.97); }
   touch-action:none; user-select:none; -webkit-user-select:none; color:var(--blue);
 }
 .holdbtn.held { background:var(--blue); color:#14101f; }
+.move-locked .holdbtn {
+  opacity:.35; filter:grayscale(1); border-color:#6c657a; color:#aaa4b8;
+}
 
 #grip {
   position:fixed; left:0; right:0; bottom:0; height:46dvh;
@@ -37,6 +40,14 @@ button:active { transform:scale(.97); }
   font-size:1.5rem; font-weight:800; letter-spacing:.05em; text-align:center;
 }
 #grip.held { background:var(--accent); color:#14101f; }
+.move-locked #grip {
+  opacity:.45; filter:grayscale(1); border-top-color:#756b83; color:#aaa4b8;
+  font-size:0;
+}
+.move-locked #grip::after {
+  content:"WAITING FOR PINS";
+  font-size:1.3rem; font-weight:800; letter-spacing:.05em;
+}
 
 /* iOS can't lock orientation — nag instead */
 @media (orientation: landscape) {
