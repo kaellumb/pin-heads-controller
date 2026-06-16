@@ -10,21 +10,31 @@ class ConnectionManager {
   }
 
   connect() {
+    this.onStatusChange?.(`connecting ${this.relayUrl}`);
+    console.log("[ws] connect", this.relayUrl);
     this.ws = new WebSocket(this.relayUrl);
 
     this.ws.onopen = () => {
+      console.log("[ws] open", this.relayUrl);
       this.onStatusChange?.("connected");
       if (this.savedCode) this.joinRoom();
     };
 
+    this.ws.onerror = (event) => {
+      console.log("[ws] error", this.relayUrl, event);
+      this.onStatusChange?.(`relay error ${this.relayUrl}`);
+    };
+
     this.ws.onclose = () => {
-      this.onStatusChange?.("reconnecting…");
+      console.log("[ws] close", this.relayUrl);
+      this.onStatusChange?.(`reconnecting ${this.relayUrl}`);
       this.joined = false;
       this.onReset?.();
       setTimeout(() => this.connect(), 1500);
     };
 
     this.ws.onmessage = (e) => {
+      console.log("[ws] message", e.data);
       const msg = JSON.parse(e.data);
       this.onMessage?.(msg);
     };
