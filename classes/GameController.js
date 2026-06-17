@@ -57,6 +57,8 @@ class GameController {
   }
 
   _bindCenterButton() {
+    if (!this._centerButton) return;
+
     const recenter = (e) => {
       e.preventDefault();
       this.sensors.recenterPose();
