@@ -1,7 +1,8 @@
 const PROD_RELAY_URL = "wss://pin-heads-relay.onrender.com";
 const RELAY_URL = getRelayUrl();
 
-const FULL_SPIN_TILT = 80; // degrees of tilt at release = maximum spin (±1)
+const FULL_SPIN_TILT = 80;
+const PHOTO_KEY = "player_photo";
 
 let token = localStorage.getItem("player_token");
 if (!token) {
@@ -11,14 +12,21 @@ if (!token) {
 
 let savedName = localStorage.getItem("player_name") || "";
 let savedCode = "";
+let savedPhoto = localStorage.getItem(PHOTO_KEY) || "";
+let selfieStream = null;
+
 document.getElementById("name").value = savedName;
 
 const sensors = new SensorManager();
 const statusEl = document.getElementById("status");
 const sensorDebugEl = document.getElementById("sensor-debug");
+const profileChip = document.getElementById("profile-chip");
+const profileThumb = document.getElementById("profile-thumb");
+const profileInitials = document.getElementById("profile-initials");
 
 statusEl.textContent = `boot ${RELAY_URL}`;
 renderSensorDebug("boot");
+renderProfileChip();
 
 window.addEventListener("error", (event) => {
   console.log("[window.error]", event.message, event.error);
@@ -38,11 +46,16 @@ const connection = new ConnectionManager(RELAY_URL, {
   onMessage: (msg) => {
     if (msg.type === "joined") {
       connection.joined = true;
+      document.body.classList.add("joined");
       connection.send({ type: "hello", token, name: savedName });
+      sendProfile();
       game.show("wait");
+      if (!savedPhoto) {
+        statusEl.textContent = "joined - tap the profile circle to add a photo";
+      }
     }
     if (msg.type === "error") {
-      document.getElementById("status").textContent = "room not found";
+      statusEl.textContent = "room not found";
       document.getElementById("name").disabled = false;
       document.getElementById("code").disabled = false;
     }
@@ -55,6 +68,8 @@ const connection = new ConnectionManager(RELAY_URL, {
     sensors.gripped = false;
     game.holdMode = null;
     game._setMoveLocked(false);
+    document.body.classList.remove("joined");
+    stopSelfieStream();
   },
 });
 
@@ -68,16 +83,31 @@ document.getElementById("btn-join").onclick = async () => {
   savedName = document.getElementById("name").value.trim() || "Player";
   savedCode = document.getElementById("code").value.trim().toUpperCase();
   localStorage.setItem("player_name", savedName);
+  renderProfileChip();
   if (!savedCode) return;
 
   connection.savedCode = savedCode;
+  statusEl.textContent = "joining...";
 
-  // no active/editable inputs = no iOS shake-to-undo popup mid-swing
   document.activeElement?.blur();
   document.getElementById("name").disabled = true;
   document.getElementById("code").disabled = true;
 
-  // iOS sensor permission must be requested inside a user gesture
+  if (connection.ws && connection.ws.readyState === WebSocket.OPEN) {
+    connection.joinRoom();
+  }
+
+  try {
+    await initializePhoneCapabilities();
+  } catch (error) {
+    console.log("[join.init]", error);
+  }
+};
+
+async function initializePhoneCapabilities() {
+  // Joining the room should not depend on these optional capabilities.
+  // They improve the controller once the player is already in.
+
   let motionPermission = "unavailable";
   if (typeof window.DeviceMotionEvent !== "undefined" &&
       typeof window.DeviceMotionEvent.requestPermission === "function") {
@@ -106,14 +136,97 @@ document.getElementById("btn-join").onclick = async () => {
   sensors.recenterPose();
   try { await navigator.wakeLock?.request("screen"); } catch {}
 
-  // Android: fullscreen + portrait lock (no-ops on iOS)
   try {
     await document.documentElement.requestFullscreen();
     await screen.orientation.lock("portrait");
   } catch {}
+}
 
-  connection.joinRoom();
-};
+profileChip.addEventListener("click", async () => {
+  if (!connection.joined) return;
+  await openSelfieScreen();
+});
+
+document.getElementById("btn-selfie-capture").addEventListener("click", () => {
+  captureSelfie();
+  stopSelfieStream();
+  sendProfile();
+  game.show("wait");
+});
+
+document.getElementById("btn-selfie-skip").addEventListener("click", () => {
+  stopSelfieStream();
+  game.show(connection.joined && game.myTurn ? "turn" : "wait");
+});
+
+async function openSelfieScreen() {
+  game.show("selfie");
+  const video = document.getElementById("selfie-video");
+  try {
+    stopSelfieStream();
+    selfieStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: "user", width: 512, height: 512 },
+      audio: false,
+    });
+    video.srcObject = selfieStream;
+    await video.play();
+  } catch (error) {
+    console.log("[selfie]", error);
+    statusEl.textContent = "camera unavailable";
+  }
+}
+
+function captureSelfie() {
+  const video = document.getElementById("selfie-video");
+  const canvas = document.getElementById("selfie-canvas");
+  const ctx = canvas.getContext("2d");
+  const size = 256;
+  const sourceWidth = video.videoWidth || size;
+  const sourceHeight = video.videoHeight || size;
+  const side = Math.min(sourceWidth, sourceHeight);
+  const sx = (sourceWidth - side) / 2;
+  const sy = (sourceHeight - side) / 2;
+
+  ctx.clearRect(0, 0, size, size);
+  ctx.drawImage(video, sx, sy, side, side, 0, 0, size, size);
+  savedPhoto = canvas.toDataURL("image/jpeg", 0.72);
+  localStorage.setItem(PHOTO_KEY, savedPhoto);
+  renderProfileChip();
+}
+
+function stopSelfieStream() {
+  if (!selfieStream) return;
+  for (const track of selfieStream.getTracks()) track.stop();
+  selfieStream = null;
+  document.getElementById("selfie-video").srcObject = null;
+}
+
+function sendProfile() {
+  if (!connection.joined) return;
+  connection.send({
+    type: "profile",
+    token,
+    name: savedName,
+    photo: savedPhoto,
+  });
+}
+
+function renderProfileChip() {
+  profileInitials.textContent = initials(savedName || "Player");
+  if (savedPhoto) {
+    profileThumb.src = savedPhoto;
+    profileChip.classList.add("has-photo");
+  } else {
+    profileThumb.removeAttribute("src");
+    profileChip.classList.remove("has-photo");
+  }
+}
+
+function initials(name) {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  const value = parts.map(part => part[0]).join("").slice(0, 2).toUpperCase();
+  return value || "P";
+}
 
 function getRelayUrl() {
   const params = new URLSearchParams(window.location.search);

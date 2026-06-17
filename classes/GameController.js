@@ -34,6 +34,27 @@ class GameController {
       this.show("turn");
       navigator.vibrate?.(200);
     }
+    if (d.msg === "waiting" || d.msg === "game_started") {
+      if (!this.myTurn) this.show("wait");
+    }
+    if (d.msg === "lobby_full") {
+      this.myTurn = false;
+      this.connection.joined = false;
+      document.body.classList.remove("joined");
+      document.getElementById("name").disabled = false;
+      document.getElementById("code").disabled = false;
+      document.getElementById("status").textContent = "lobby is full";
+      this.show("join");
+    }
+    if (d.msg === "kicked") {
+      this.myTurn = false;
+      this.connection.joined = false;
+      document.body.classList.remove("joined");
+      document.getElementById("name").disabled = false;
+      document.getElementById("code").disabled = false;
+      document.getElementById("status").textContent = "removed from lobby";
+      this.show("join");
+    }
     if (d.msg === "turn_over") {
       this.myTurn = false;
       this._setMoveLocked(false);
@@ -57,6 +78,8 @@ class GameController {
   }
 
   _bindCenterButton() {
+    if (!this._centerButton) return;
+
     const recenter = (e) => {
       e.preventDefault();
       this.sensors.recenterPose();
@@ -88,6 +111,7 @@ class GameController {
 
       const width = Math.max(el.getBoundingClientRect().width, 1);
       this.setupDeltas[mode] += dx / width;
+      this._sendSetupDelta(mode);
     }, { passive: false });
 
     const end = (e) => {
@@ -218,11 +242,7 @@ class GameController {
 
       if (!this.myTurn || this.moveLocked) return;
       if (this.holdMode) {
-        const amount = this._consumeSetupDelta(this.holdMode);
-        this.connection.send({
-          type: this.holdMode,
-          amount: Math.round(amount * 1000) / 1000,
-        });
+        this._sendSetupDelta(this.holdMode);
       } else if (this.gripped) {
         this.connection.send({
           type:  "motion",
@@ -237,6 +257,16 @@ class GameController {
     const value = Math.max(-1, Math.min(1, this.setupDeltas[mode] || 0));
     this.setupDeltas[mode] = 0;
     return value;
+  }
+
+  _sendSetupDelta(mode) {
+    if (!this.connection.joined || !this.myTurn || this.moveLocked) return;
+    const amount = this._consumeSetupDelta(mode);
+    if (Math.abs(amount) <= 0.001) return;
+    this.connection.send({
+      type: mode,
+      amount: Math.round(amount * 1000) / 1000,
+    });
   }
 
   _logPoseDebug() {

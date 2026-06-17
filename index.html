@@ -3,12 +3,16 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
-<title>Pin Pals — Controller</title>
+<title>Pin Pals - Controller</title>
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-<div id="status">connecting…</div>
+<div id="status">connecting...</div>
 <div id="sensor-debug"></div>
+<button id="profile-chip" aria-label="Retake profile photo">
+  <img id="profile-thumb" alt="">
+  <span id="profile-initials">P</span>
+</button>
 
 <div class="screen active" id="screen-join">
   <h1>JOIN THE GAME</h1>
@@ -19,18 +23,28 @@
 </div>
 
 <div class="screen" id="screen-wait">
-  <div class="big">You're in! 🎳</div>
-  <p class="hint">Waiting for your turn…</p>
+  <div class="big">You're in</div>
+  <p class="hint">Waiting for your turn...</p>
+</div>
+
+<div class="screen" id="screen-selfie">
+  <h1>PROFILE PHOTO</h1>
+  <video id="selfie-video" autoplay playsinline muted></video>
+  <canvas id="selfie-canvas" width="256" height="256"></canvas>
+  <div class="selfie-actions">
+    <button id="btn-selfie-capture">Use Photo</button>
+    <button id="btn-selfie-skip" class="secondary">Back</button>
+  </div>
+  <p class="hint">Center your face in the square.</p>
 </div>
 
 <div class="screen" id="screen-turn">
   <div class="big">YOUR TURN</div>
   <p class="hint">Hold MOVE or ROTATE and slide left/right to set up.<br>
-     Then hold the orange zone, swing, and let go!</p>
-  <button id="btn-center" class="aux-btn" type="button">Reset Front</button>
+     Then hold the orange zone, swing, and let go.</p>
   <div id="setup">
-    <div class="holdbtn" id="btn-move">⬌ MOVE</div>
-    <div class="holdbtn" id="btn-rotate">⟲ ROTATE</div>
+    <div class="holdbtn" id="btn-move">MOVE</div>
+    <div class="holdbtn" id="btn-rotate">ROTATE</div>
   </div>
   <div id="grip">HOLD TO GRIP</div>
 </div>
