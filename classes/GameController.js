@@ -8,6 +8,7 @@ class GameController {
     this.moveLocked = false;
     this.gripped = false;
     this.holdMode = null; // null, "aim", "rotate"
+    this.setupDeltas = { aim: 0, rotate: 0 };
 
     this._grip = document.getElementById("grip");
     this._moveButton = document.getElementById("btn-move");
@@ -67,26 +68,46 @@ class GameController {
   }
 
   _bindHoldButton(el, mode) {
-    el.addEventListener("touchstart", (e) => {
+    el.addEventListener("pointerdown", (e) => {
       e.preventDefault();
       if (!this.myTurn || this.moveLocked || this.gripped) return;
       this.holdMode = mode;
+      el.dataset.lastX = String(e.clientX);
+      el.setPointerCapture?.(e.pointerId);
       el.classList.add("held");
       navigator.vibrate?.(40);
+    }, { passive: false });
+
+    el.addEventListener("pointermove", (e) => {
+      if (this.holdMode !== mode) return;
+      e.preventDefault();
+
+      const lastX = Number.parseFloat(el.dataset.lastX || String(e.clientX));
+      const dx = e.clientX - lastX;
+      el.dataset.lastX = String(e.clientX);
+
+      const width = Math.max(el.getBoundingClientRect().width, 1);
+      this.setupDeltas[mode] += dx / width;
     }, { passive: false });
 
     const end = (e) => {
       e.preventDefault();
       if (this.holdMode === mode) this.holdMode = null;
+      el.releasePointerCapture?.(e.pointerId);
+      delete el.dataset.lastX;
       el.classList.remove("held");
     };
-    el.addEventListener("touchend", end, { passive: false });
-    el.addEventListener("touchcancel", end, { passive: false });
+    el.addEventListener("pointerup", end, { passive: false });
+    el.addEventListener("pointercancel", end, { passive: false });
   }
 
   _resetSetupUI() {
     this._moveButton.classList.remove("held");
     this._rotateButton.classList.remove("held");
+    delete this._moveButton.dataset.lastX;
+    delete this._rotateButton.dataset.lastX;
+    this.setupDeltas.aim = 0;
+    this.setupDeltas.rotate = 0;
   }
 
 
@@ -197,9 +218,10 @@ class GameController {
 
       if (!this.myTurn || this.moveLocked) return;
       if (this.holdMode) {
+        const amount = this._consumeSetupDelta(this.holdMode);
         this.connection.send({
           type: this.holdMode,
-          tilt: Math.round(this.sensors.tilt * 10) / 10,
+          amount: Math.round(amount * 1000) / 1000,
         });
       } else if (this.gripped) {
         this.connection.send({
@@ -209,6 +231,12 @@ class GameController {
         });
       }
     }, 40);
+  }
+
+  _consumeSetupDelta(mode) {
+    const value = Math.max(-1, Math.min(1, this.setupDeltas[mode] || 0));
+    this.setupDeltas[mode] = 0;
+    return value;
   }
 
   _logPoseDebug() {

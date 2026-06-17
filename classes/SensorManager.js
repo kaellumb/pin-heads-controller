@@ -5,14 +5,18 @@ class SensorManager {
     this.velocity = 0;
     this.velHistory = [];
     this.gravY = 0;
+    this.swingAcceleration = 0;
     this.posePitch = 0;
     this.poseRoll = 0;
     this.poseYaw = 0;
     this.gripped = false;
 
     this._gravity = { x: 0, y: 0, z: 9.8 };
+    this._linearAcceleration = { x: 0, y: 0, z: 0 };
+    this._accelBias = { x: 0, y: 0, z: 0 };
     this._gyroBias = { alpha: 0, beta: 0, gamma: 0 };
     this._gyroSamples = [];
+    this._accelSamples = [];
     this._rawPosePitch = 0;
     this._rawPoseRoll = 0;
     this._rawPoseYaw = 0;
@@ -31,6 +35,7 @@ class SensorManager {
     this._motionEvents = 0;
     this._lastRawOrientation = null;
     this._lastRawRotationRate = null;
+    this._lastRawAcceleration = null;
     this._started = false;
   }
 
@@ -48,7 +53,10 @@ class SensorManager {
     this.velHistory = [];
     this._lastMotionTime = performance.now();
     this._gyroSamples = [];
+    this._accelSamples = [];
     this._gyroBias = { alpha: 0, beta: 0, gamma: 0 };
+    this._accelBias = { x: 0, y: 0, z: 0 };
+    this.swingAcceleration = 0;
     this._swingAxis = "beta";
   }
 
@@ -97,6 +105,7 @@ class SensorManager {
   _handleDeviceMotion(e) {
     this._motionEvents += 1;
     this._updateGravity(e.accelerationIncludingGravity);
+    this._updateLinearAcceleration(e.acceleration, e.accelerationIncludingGravity);
     this._updateTiltFromGravity();
 
     const now = performance.now();
@@ -110,12 +119,22 @@ class SensorManager {
     if (!rate) return;
 
     if (this.gripped) {
-      this._sampleGyroBias(rate);
+      this._sampleSensorBias(rate, this._linearAcceleration);
       const corrected = this._getCorrectedRate(rate);
+      const correctedAcceleration = this._getCorrectedAcceleration(this._linearAcceleration);
       const axisRate = corrected[this._swingAxis];
-      const filteredRate = this.velocity * 0.35 + axisRate * 0.65;
+      const accelerationMagnitude = Math.hypot(
+        correctedAcceleration.x,
+        correctedAcceleration.y,
+        correctedAcceleration.z,
+      );
+      const accelerationGate = this._clamp((accelerationMagnitude - 1.0) / 5.0, 0, 1);
+      const signedAccelerationSpeed = this._getSwingDirection(axisRate, correctedAcceleration) * accelerationMagnitude * 12.0;
+      const armRate = (axisRate * accelerationGate) + (signedAccelerationSpeed * 0.35);
+      const filteredRate = this.velocity * 0.35 + armRate * 0.65;
 
       this.velocity = filteredRate;
+      this.swingAcceleration = this.swingAcceleration * 0.65 + accelerationMagnitude * 0.35;
       if (dt > 0 && dt < 0.2) {
         this.swing += filteredRate * dt;
       }
@@ -138,6 +157,36 @@ class SensorManager {
 
     const len = Math.hypot(this._gravity.x, this._gravity.y, this._gravity.z) || 1;
     this.gravY = this._gravity.y / len;
+  }
+
+  _updateLinearAcceleration(acceleration, accelerationIncludingGravity) {
+    let next = null;
+
+    if (acceleration && (
+      Number.isFinite(acceleration.x) ||
+      Number.isFinite(acceleration.y) ||
+      Number.isFinite(acceleration.z)
+    )) {
+      next = {
+        x: Number.isFinite(acceleration.x) ? acceleration.x : 0,
+        y: Number.isFinite(acceleration.y) ? acceleration.y : 0,
+        z: Number.isFinite(acceleration.z) ? acceleration.z : 0,
+      };
+    } else if (accelerationIncludingGravity) {
+      next = {
+        x: (accelerationIncludingGravity.x ?? 0) - this._gravity.x,
+        y: (accelerationIncludingGravity.y ?? 0) - this._gravity.y,
+        z: (accelerationIncludingGravity.z ?? 0) - this._gravity.z,
+      };
+    }
+
+    if (!next) return;
+
+    const k = 0.45;
+    this._linearAcceleration.x += k * (next.x - this._linearAcceleration.x);
+    this._linearAcceleration.y += k * (next.y - this._linearAcceleration.y);
+    this._linearAcceleration.z += k * (next.z - this._linearAcceleration.z);
+    this._lastRawAcceleration = next;
   }
 
   _updateTiltFromGravity() {
@@ -190,11 +239,13 @@ class SensorManager {
     return { alpha, beta, gamma };
   }
 
-  _sampleGyroBias(rate) {
+  _sampleSensorBias(rate, acceleration) {
     if (this._gyroSamples.length < 8) {
       this._gyroSamples.push(rate);
+      this._accelSamples.push(acceleration);
       if (this._gyroSamples.length === 8) {
         this._gyroBias = this._averageRates(this._gyroSamples);
+        this._accelBias = this._averageAccelerations(this._accelSamples);
         this._swingAxis = this._chooseSwingAxis(this._gyroSamples);
       }
     }
@@ -222,6 +273,51 @@ class SensorManager {
       beta: total.beta / count,
       gamma: total.gamma / count,
     };
+  }
+
+  _averageAccelerations(samples) {
+    const total = { x: 0, y: 0, z: 0 };
+    for (const sample of samples) {
+      total.x += sample.x;
+      total.y += sample.y;
+      total.z += sample.z;
+    }
+
+    const count = samples.length || 1;
+    return {
+      x: total.x / count,
+      y: total.y / count,
+      z: total.z / count,
+    };
+  }
+
+  _getCorrectedAcceleration(acceleration) {
+    return {
+      x: acceleration.x - this._accelBias.x,
+      y: acceleration.y - this._accelBias.y,
+      z: acceleration.z - this._accelBias.z,
+    };
+  }
+
+  _getSwingDirection(axisRate, acceleration) {
+    if (Math.abs(axisRate) > 0.5) return Math.sign(axisRate);
+
+    const orientation = this._getScreenAngle();
+    let forwardAcceleration = acceleration.y;
+    if (orientation === 90) {
+      forwardAcceleration = -acceleration.x;
+    } else if (orientation === -90 || orientation === 270) {
+      forwardAcceleration = acceleration.x;
+    } else if (orientation === 180 || orientation === -180) {
+      forwardAcceleration = -acceleration.y;
+    }
+
+    if (Math.abs(forwardAcceleration) > 0.1) return Math.sign(forwardAcceleration);
+    return 0;
+  }
+
+  _clamp(value, min, max) {
+    return Math.max(min, Math.min(max, value));
   }
 
   _chooseSwingAxis(samples) {
@@ -292,6 +388,7 @@ class SensorManager {
       motionEvents: this._motionEvents,
       rawOrientation: this._lastRawOrientation,
       rawRotationRate: this._lastRawRotationRate,
+      rawAcceleration: this._lastRawAcceleration,
       posePitch: this.posePitch,
       poseRoll: this.poseRoll,
       poseYaw: this.poseYaw,
@@ -303,6 +400,7 @@ class SensorManager {
       zeroPoseYaw: this._poseZeroYaw,
       tilt: this.tilt,
       gravY: this.gravY,
+      swingAcceleration: this.swingAcceleration,
     };
   }
 
@@ -337,6 +435,14 @@ class SensorManager {
             gamma: Math.round(rate.gamma * 10) / 10,
           }
         : null,
+      acceleration: this._lastRawAcceleration
+        ? {
+            x: Math.round(this._lastRawAcceleration.x * 10) / 10,
+            y: Math.round(this._lastRawAcceleration.y * 10) / 10,
+            z: Math.round(this._lastRawAcceleration.z * 10) / 10,
+          }
+        : null,
+      swingAcceleration: Math.round(this.swingAcceleration * 10) / 10,
       posePitch: Math.round(this.posePitch * 10) / 10,
       poseRoll: Math.round(this.poseRoll * 10) / 10,
       poseYaw: Math.round(this.poseYaw * 10) / 10,
