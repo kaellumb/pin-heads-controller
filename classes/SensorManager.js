@@ -25,6 +25,8 @@ class SensorManager {
     this._poseZeroYaw = 0;
     this._swingAxis = "beta";
     this._tiltSign = -1;
+    this._rawTilt = 0;
+    this._tiltZero = 0;
     this._lastMotionTime = 0;
     this._lastOrientationLogTime = 0;
     this._lastSensorLogTime = 0;
@@ -58,6 +60,9 @@ class SensorManager {
     this._accelBias = { x: 0, y: 0, z: 0 };
     this.swingAcceleration = 0;
     this._swingAxis = "beta";
+    // Capture the resting tilt so spin is measured relative to grip pose,
+    // not absolute gravity roll. Removes the left/right range asymmetry.
+    this._tiltZero = this._rawTilt;
   }
 
   recenterPose() {
@@ -83,7 +88,8 @@ class SensorManager {
     };
 
     if (!this._hasGravity && hasGamma) {
-      this.tilt = this._normalizeAngle(e.gamma);
+      this._rawTilt = this._normalizeAngle(e.gamma);
+      this.tilt = this._normalizeAngle(this._rawTilt - this._tiltZero);
     }
 
     if (hasAlpha || hasBeta || hasGamma) {
@@ -211,7 +217,9 @@ class SensorManager {
       this._tiltSign = -1;
     }
 
-    this.tilt = this._tiltSign * (Math.atan2(lateral, Math.abs(vertical) + 0.001) * 180 / Math.PI);
+    const raw = this._tiltSign * (Math.atan2(lateral, Math.abs(vertical) + 0.001) * 180 / Math.PI);
+    this._rawTilt = raw;
+    this.tilt = this._normalizeAngle(raw - this._tiltZero);
   }
 
   _updatePoseFromGyro(rate, dt) {
@@ -399,6 +407,8 @@ class SensorManager {
       zeroPoseRoll: this._poseZeroRoll,
       zeroPoseYaw: this._poseZeroYaw,
       tilt: this.tilt,
+      rawTilt: this._rawTilt,
+      tiltZero: this._tiltZero,
       gravY: this.gravY,
       swingAcceleration: this.swingAcceleration,
     };
@@ -443,6 +453,8 @@ class SensorManager {
           }
         : null,
       swingAcceleration: Math.round(this.swingAcceleration * 10) / 10,
+      tilt: Math.round(this.tilt * 10) / 10,
+      rawTilt: Math.round(this._rawTilt * 10) / 10,
       posePitch: Math.round(this.posePitch * 10) / 10,
       poseRoll: Math.round(this.poseRoll * 10) / 10,
       poseYaw: Math.round(this.poseYaw * 10) / 10,
