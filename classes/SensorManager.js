@@ -87,7 +87,7 @@ class SensorManager {
       absolute: e.absolute ?? null,
     };
 
-    if (!this._hasGravity && hasGamma) {
+    if (hasGamma) {
       this._rawTilt = this._normalizeAngle(e.gamma);
       this.tilt = this._normalizeAngle(this._rawTilt - this._tiltZero);
     }
@@ -112,7 +112,6 @@ class SensorManager {
     this._motionEvents += 1;
     this._updateGravity(e.accelerationIncludingGravity);
     this._updateLinearAcceleration(e.acceleration, e.accelerationIncludingGravity);
-    this._updateTiltFromGravity();
 
     const now = performance.now();
     const dt = this._lastMotionTime ? (now - this._lastMotionTime) / 1000 : 0;
