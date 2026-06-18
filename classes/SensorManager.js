@@ -2,6 +2,7 @@ class SensorManager {
   constructor() {
     this.tilt = 0;
     this.swing = 0;
+    this.spinAngle = 0;
     this.velocity = 0;
     this.velHistory = [];
     this.gravY = 0;
@@ -51,6 +52,7 @@ class SensorManager {
 
   zero() {
     this.swing = 0;
+    this.spinAngle = 0;
     this.velocity = 0;
     this.velHistory = [];
     this._lastMotionTime = performance.now();
@@ -60,8 +62,7 @@ class SensorManager {
     this._accelBias = { x: 0, y: 0, z: 0 };
     this.swingAcceleration = 0;
     this._swingAxis = "beta";
-    // Capture the resting tilt so spin is measured relative to grip pose,
-    // not absolute gravity roll. Removes the left/right range asymmetry.
+    // Capture resting tilt so the streamed tilt value is grip-relative.
     this._tiltZero = this._rawTilt;
   }
 
@@ -87,8 +88,10 @@ class SensorManager {
       absolute: e.absolute ?? null,
     };
 
+    // Tilt comes from OS-fused gamma (used for the streamed/aim value only;
+    // spin is the gyro-integrated spinAngle now).
     if (hasGamma) {
-      this._rawTilt = this._normalizeAngle(e.gamma);
+      this._rawTilt = nextRoll;
       this.tilt = this._normalizeAngle(this._rawTilt - this._tiltZero);
     }
 
@@ -142,6 +145,7 @@ class SensorManager {
       this.swingAcceleration = this.swingAcceleration * 0.65 + accelerationMagnitude * 0.35;
       if (dt > 0 && dt < 0.2) {
         this.swing += filteredRate * dt;
+        this.spinAngle += corrected.gamma * dt;   // gyro-integrated wrist twist → spin
       }
 
       this.velHistory.push({ t: now, v: filteredRate });
@@ -192,33 +196,6 @@ class SensorManager {
     this._linearAcceleration.y += k * (next.y - this._linearAcceleration.y);
     this._linearAcceleration.z += k * (next.z - this._linearAcceleration.z);
     this._lastRawAcceleration = next;
-  }
-
-  _updateTiltFromGravity() {
-    const { x, y, z } = this._gravity;
-    const orientation = this._getScreenAngle();
-    let lateral = x;
-    let vertical = z;
-
-    if (orientation === 90) {
-      lateral = y;
-      vertical = z;
-      this._tiltSign = 1;
-    } else if (orientation === -90 || orientation === 270) {
-      lateral = -y;
-      vertical = z;
-      this._tiltSign = -1;
-    } else if (orientation === 180 || orientation === -180) {
-      lateral = -x;
-      vertical = z;
-      this._tiltSign = 1;
-    } else {
-      this._tiltSign = -1;
-    }
-
-    const raw = this._tiltSign * (Math.atan2(lateral, Math.abs(vertical) + 0.001) * 180 / Math.PI);
-    this._rawTilt = raw;
-    this.tilt = this._normalizeAngle(raw - this._tiltZero);
   }
 
   _updatePoseFromGyro(rate, dt) {
@@ -406,8 +383,7 @@ class SensorManager {
       zeroPoseRoll: this._poseZeroRoll,
       zeroPoseYaw: this._poseZeroYaw,
       tilt: this.tilt,
-      rawTilt: this._rawTilt,
-      tiltZero: this._tiltZero,
+      spinAngle: this.spinAngle,
       gravY: this.gravY,
       swingAcceleration: this.swingAcceleration,
     };
@@ -444,16 +420,9 @@ class SensorManager {
             gamma: Math.round(rate.gamma * 10) / 10,
           }
         : null,
-      acceleration: this._lastRawAcceleration
-        ? {
-            x: Math.round(this._lastRawAcceleration.x * 10) / 10,
-            y: Math.round(this._lastRawAcceleration.y * 10) / 10,
-            z: Math.round(this._lastRawAcceleration.z * 10) / 10,
-          }
-        : null,
       swingAcceleration: Math.round(this.swingAcceleration * 10) / 10,
       tilt: Math.round(this.tilt * 10) / 10,
-      rawTilt: Math.round(this._rawTilt * 10) / 10,
+      spinAngle: Math.round(this.spinAngle * 10) / 10,
       posePitch: Math.round(this.posePitch * 10) / 10,
       poseRoll: Math.round(this.poseRoll * 10) / 10,
       poseYaw: Math.round(this.poseYaw * 10) / 10,

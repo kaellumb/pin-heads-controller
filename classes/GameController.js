@@ -171,8 +171,8 @@ class GameController {
         if (Math.abs(s.v) > Math.abs(peak)) peak = s.v;
       }
 
-      // spin: raw tilt at release, scaled to -1 … +1
-      const spin = Math.max(-1, Math.min(1, this.sensors.tilt / this.fullSpinTilt));
+      // spin: gyro-integrated wrist twist since grip, scaled to -1 … +1
+      const spin = Math.max(-1, Math.min(1, this.sensors.spinAngle / this.fullSpinTilt));
 
       this.connection.send({
         type:  "throw",
@@ -279,6 +279,7 @@ class GameController {
       roll: Math.round(this.sensors.poseRoll * 10) / 10,
       yaw: Math.round(this.sensors.poseYaw * 10) / 10,
       tilt: Math.round(this.sensors.tilt * 10) / 10,
+      spinAngle: Math.round(this.sensors.spinAngle * 10) / 10,
       swing: Math.round(this.sensors.swing * 10) / 10,
       joined: this.connection.joined,
       myTurn: this.myTurn,
